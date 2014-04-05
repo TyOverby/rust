@@ -975,6 +975,7 @@ mod test {
     use ext::mtwt;
     use parse;
     use parse::token;
+    use ptr::P;
     use util::parser_testing::{string_to_parser};
     use util::parser_testing::{string_to_pat, strs_to_idents};
     use visit;
@@ -1089,7 +1090,7 @@ mod test {
         let attr1 = make_dummy_attr ("foo");
         let attr2 = make_dummy_attr ("bar");
         let escape_attr = make_dummy_attr ("macro_escape");
-        let attrs1 = vec!(attr1, escape_attr, attr2);
+        let attrs1 = vec!(attr1.clone(), escape_attr, attr2.clone());
         assert_eq!(contains_macro_escape(attrs1.as_slice()),true);
         let attrs2 = vec!(attr1,attr2);
         assert_eq!(contains_macro_escape(attrs2.as_slice()),false);
@@ -1317,7 +1318,7 @@ foo_module!()
         let pat = string_to_pat(
             "(a,Foo{x:c @ (b,9),y:Bar(4,d)})".to_strbuf());
         let mut pat_idents = new_name_finder(Vec::new());
-        pat_idents.visit_pat(pat, ());
+        pat_idents.visit_pat(&*pat, ());
         assert_eq!(pat_idents.ident_accumulator,
                    strs_to_idents(vec!("a","c","b","d")));
     }
