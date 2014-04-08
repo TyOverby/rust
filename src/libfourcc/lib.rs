@@ -62,6 +62,7 @@ use syntax::ext::build::AstBuilder;
 use syntax::parse;
 use syntax::parse::token;
 use syntax::parse::token::InternedString;
+use syntax::ptr::P;
 
 #[macro_registrar]
 pub fn macro_registrar(register: |Name, SyntaxExtension|) {
@@ -135,7 +136,7 @@ struct Ident {
     span: Span
 }
 
-fn parse_tts(cx: &ExtCtxt, tts: &[ast::TokenTree]) -> (@ast::Expr, Option<Ident>) {
+fn parse_tts(cx: &ExtCtxt, tts: &[ast::TokenTree]) -> (P<ast::Expr>, Option<Ident>) {
     let p = &mut parse::new_parser_from_tts(cx.parse_sess(),
                                             cx.cfg(),
                                             tts.iter()
@@ -160,7 +161,7 @@ fn parse_tts(cx: &ExtCtxt, tts: &[ast::TokenTree]) -> (@ast::Expr, Option<Ident>
 fn target_endian_little(cx: &ExtCtxt, sp: Span) -> bool {
     let meta = cx.meta_name_value(sp, InternedString::new("target_endian"),
         ast::LitStr(InternedString::new("little"), ast::CookedStr));
-    contains(cx.cfg().as_slice(), meta)
+    contains(cx.cfg().as_slice(), &*meta)
 }
 
 // FIXME (10872): This is required to prevent an LLVM assert on Windows
