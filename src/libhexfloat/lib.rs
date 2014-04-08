@@ -57,6 +57,7 @@ use syntax::ext::base::{SyntaxExtension, BasicMacroExpander, NormalTT, ExtCtxt, 
 use syntax::ext::build::AstBuilder;
 use syntax::parse;
 use syntax::parse::token;
+use syntax::ptr::P;
 
 #[macro_registrar]
 pub fn macro_registrar(register: |Name, SyntaxExtension|) {
@@ -125,7 +126,7 @@ pub fn expand_syntax_ext(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 
     let s = match expr.node {
         // expression is a literal
-        ast::ExprLit(lit) => match lit.node {
+        ast::ExprLit(ref lit) => match lit.node {
             // string literal
             ast::LitStr(ref s, _) => {
                 s.clone()
@@ -166,7 +167,7 @@ struct Ident {
     span: Span
 }
 
-fn parse_tts(cx: &ExtCtxt, tts: &[ast::TokenTree]) -> (@ast::Expr, Option<Ident>) {
+fn parse_tts(cx: &ExtCtxt, tts: &[ast::TokenTree]) -> (P<ast::Expr>, Option<Ident>) {
     let p = &mut parse::new_parser_from_tts(cx.parse_sess(),
                                             cx.cfg(),
                                             tts.iter()
