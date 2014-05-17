@@ -49,17 +49,17 @@ pub mod syntax {
     pub use parse;
 }
 
-pub mod owned_slice;
-pub mod attr;
-pub mod diagnostic;
-pub mod codemap;
 pub mod abi;
 pub mod ast;
 pub mod ast_util;
 pub mod ast_map;
-pub mod visit;
+pub mod attr;
+pub mod codemap;
+pub mod diagnostic;
 pub mod fold;
-
+pub mod owned_slice;
+pub mod ptr;
+pub mod visit;
 
 pub mod parse;
 pub mod crateid;

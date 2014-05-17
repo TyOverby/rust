@@ -23,14 +23,6 @@ use std::option::Option;
 use std::rc::Rc;
 use serialize::{Encodable, Decodable, Encoder, Decoder};
 
-/// A pointer abstraction. FIXME(eddyb) #10676 use Rc<T> in the future.
-pub type P<T> = @T;
-
-/// Construct a P<T> from a T value.
-pub fn P<T: 'static>(value: T) -> P<T> {
-    @value
-}
-
 // FIXME #6993: in librustc, uses of "ident" should be replaced
 // by just "Name".
 
