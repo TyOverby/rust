@@ -1151,6 +1151,13 @@ pub enum InlinedItem {
     IIForeign(P<ForeignItem>),
 }
 
+/// A borrowed version of InlinedItem.
+pub enum InlinedItemRef<'a> {
+    IIItemRef(&'a Item),
+    IIMethodRef(DefId, bool, &'a Method),
+    IIForeignRef(&'a ForeignItem)
+}
+
 #[cfg(test)]
 mod test {
     use serialize::json;
