@@ -16,6 +16,7 @@ use rustc::middle::lint;
 
 use syntax::ast;
 use syntax::parse::token;
+use syntax::ptr::P;
 use syntax;
 
 use std::cell::RefCell;
@@ -89,7 +90,7 @@ fn get_ast_and_resolve(cpath: &Path, libs: HashSet<Path>, cfgs: Vec<StrBuf>)
     let mut cfg = build_configuration(&sess);
     for cfg_ in cfgs.move_iter() {
         let cfg_ = token::intern_and_get_ident(cfg_.as_slice());
-        cfg.push(@dummy_spanned(ast::MetaWord(cfg_)));
+        cfg.push(P(dummy_spanned(ast::MetaWord(cfg_))));
     }
 
     let krate = phase_1_parse_input(&sess, cfg, &input);

@@ -19,6 +19,7 @@ use syntax::attr::AttributeMethods;
 use syntax::codemap::Pos;
 use syntax::parse::token::InternedString;
 use syntax::parse::token;
+use syntax::ptr::P;
 
 use rustc::back::link;
 use rustc::driver::driver;
@@ -46,7 +47,7 @@ impl<T: Clean<U>, U> Clean<Vec<U>> for Vec<T> {
     }
 }
 
-impl<T: Clean<U>, U> Clean<U> for @T {
+impl<T: Clean<U>, U> Clean<U> for P<T> {
     fn clean(&self) -> U {
         (**self).clean()
     }
@@ -308,14 +309,14 @@ impl Clean<Attribute> for ast::MetaItem {
 
 impl Clean<Attribute> for ast::Attribute {
     fn clean(&self) -> Attribute {
-        self.desugar_doc().node.value.clean()
+        self.with_desugared_doc(|attr| attr.node.value.clean())
     }
 }
 
 // This is a rough approximation that gets us what we want.
-impl<'a> attr::AttrMetaMethods for &'a Attribute {
+impl attr::AttrMetaMethods for Attribute {
     fn name(&self) -> InternedString {
-        match **self {
+        match *self {
             Word(ref n) | List(ref n, _) | NameValue(ref n, _) => {
                 token::intern_and_get_ident(n.as_slice())
             }
@@ -323,14 +324,14 @@ impl<'a> attr::AttrMetaMethods for &'a Attribute {
     }
 
     fn value_str(&self) -> Option<InternedString> {
-        match **self {
+        match *self {
             NameValue(_, ref v) => {
                 Some(token::intern_and_get_ident(v.as_slice()))
             }
             _ => None,
         }
     }
-    fn meta_item_list<'a>(&'a self) -> Option<&'a [@ast::MetaItem]> { None }
+    fn meta_item_list<'a>(&'a self) -> Option<&'a [P<ast::MetaItem>]> { None }
     fn name_str_pair(&self) -> Option<(InternedString, InternedString)> {
         None
     }
@@ -581,8 +582,8 @@ pub struct Argument {
 impl Clean<Argument> for ast::Arg {
     fn clean(&self) -> Argument {
         Argument {
-            name: name_from_pat(self.pat),
-            type_: (self.ty.clean()),
+            name: name_from_pat(&*self.pat),
+            type_: self.ty.clean(),
             id: self.id
         }
     }
@@ -733,11 +734,11 @@ impl Clean<Type> for ast::Ty {
             TyRptr(ref l, ref m) =>
                 BorrowedRef {lifetime: l.clean(), mutability: m.mutbl.clean(),
                              type_: box m.ty.clean()},
-            TyBox(ty) => Managed(box ty.clean()),
-            TyUniq(ty) => Unique(box ty.clean()),
-            TyVec(ty) => Vector(box ty.clean()),
-            TyFixedLengthVec(ty, ref e) => FixedVector(box ty.clean(),
-                                                       e.span.to_src()),
+            TyBox(ref ty) => Managed(box ty.clean()),
+            TyUniq(ref ty) => Unique(box ty.clean()),
+            TyVec(ref ty) => Vector(box ty.clean()),
+            TyFixedLengthVec(ref ty, ref e) => FixedVector(box ty.clean(),
+                                                           e.span.to_src()),
             TyTup(ref tys) => Tuple(tys.iter().map(|x| x.clean()).collect()),
             TyPath(ref p, ref tpbs, id) => {
                 resolve_type(p.clean(),
@@ -1273,8 +1274,8 @@ fn name_from_pat(p: &ast::Pat) -> StrBuf {
         PatStruct(..) => fail!("tried to get argument name from pat_struct, \
                                 which is not allowed in function arguments"),
         PatTup(..) => "(tuple arg NYI)".to_strbuf(),
-        PatUniq(p) => name_from_pat(p),
-        PatRegion(p) => name_from_pat(p),
+        PatUniq(ref p) => name_from_pat(&**p),
+        PatRegion(ref p) => name_from_pat(&**p),
         PatLit(..) => {
             warn!("tried to get argument name from PatLit, \
                   which is silly in function arguments");

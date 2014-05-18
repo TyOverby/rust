@@ -27,6 +27,7 @@ use syntax::ast;
 use syntax::codemap::{CodeMap, dummy_spanned};
 use syntax::diagnostic;
 use syntax::parse::token;
+use syntax::ptr::P;
 
 use core;
 use clean;
@@ -64,7 +65,7 @@ pub fn run(input: &str,
     let mut cfg = config::build_configuration(&sess);
     cfg.extend(cfgs.move_iter().map(|cfg_| {
         let cfg_ = token::intern_and_get_ident(cfg_.as_slice());
-        @dummy_spanned(ast::MetaWord(cfg_))
+        P(dummy_spanned(ast::MetaWord(cfg_)))
     }));
     let krate = driver::phase_1_parse_input(&sess, cfg, &input);
     let (krate, _) = driver::phase_2_configure_and_expand(&sess, &mut Loader::new(&sess), krate,
