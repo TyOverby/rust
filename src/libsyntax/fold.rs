@@ -24,20 +24,21 @@ trait MoveMap<T> {
 }
 
 impl<T> MoveMap<T> for Vec<T> {
-    fn move_map(self, f: |T| -> T) -> Vec<T> {
-        self.move_iter().map(f).collect()
+    fn move_map(mut self, f: |T| -> T) -> Vec<T> {
+        use std::{mem, ptr};
+        for p in self.mut_iter() {
+            unsafe {
+                // FIXME(#5016) this shouldn't need to zero to be safe.
+                mem::move_val_init(p, f(ptr::read_and_zero(p)));
+            }
+        }
+        self
     }
 }
 
 impl<T> MoveMap<T> for OwnedSlice<T> {
     fn move_map(self, f: |T| -> T) -> OwnedSlice<T> {
         OwnedSlice::from_vec(self.into_vec().move_map(f))
-    }
-}
-
-impl<T> MoveMap<T> for SmallVector<T> {
-    fn move_map(self, f: |T| -> T) -> SmallVector<T> {
-        self.move_iter().map(f).collect()
     }
 }
 
