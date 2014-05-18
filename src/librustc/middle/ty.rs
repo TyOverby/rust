@@ -345,8 +345,8 @@ pub struct ctxt {
 
     // These two caches are used by const_eval when decoding external statics
     // and variants that are found.
-    pub extern_const_statics: RefCell<DefIdMap<Option<@ast::Expr>>>,
-    pub extern_const_variants: RefCell<DefIdMap<Option<@ast::Expr>>>,
+    pub extern_const_statics: RefCell<DefIdMap<Option<*ast::Expr>>>,
+    pub extern_const_variants: RefCell<DefIdMap<Option<*ast::Expr>>>,
 
     pub method_map: typeck::MethodMap,
     pub vtable_map: typeck::vtable_map,
@@ -3099,7 +3099,7 @@ pub fn expr_kind(tcx: &ctxt, expr: &ast::Expr) -> ExprKind {
             RvalueDpsExpr
         }
 
-        ast::ExprLit(lit) if lit_is_str(lit) => {
+        ast::ExprLit(ref lit) if lit_is_str(&**lit) => {
             RvalueDpsExpr
         }
 
@@ -3150,7 +3150,7 @@ pub fn expr_kind(tcx: &ctxt, expr: &ast::Expr) -> ExprKind {
             RvalueDatumExpr
         }
 
-        ast::ExprBox(place, _) => {
+        ast::ExprBox(ref place, _) => {
             // Special case `Box<T>` for now:
             let definition = match tcx.def_map.borrow().find(&place.id) {
                 Some(&def) => def,
@@ -3165,7 +3165,7 @@ pub fn expr_kind(tcx: &ctxt, expr: &ast::Expr) -> ExprKind {
             }
         }
 
-        ast::ExprParen(e) => expr_kind(tcx, e),
+        ast::ExprParen(ref e) => expr_kind(tcx, &**e),
 
         ast::ExprMac(..) => {
             tcx.sess.span_bug(
@@ -3441,8 +3441,12 @@ pub fn provided_trait_methods(cx: &ctxt, id: ast::DefId) -> Vec<Rc<Method>> {
             Some(ast_map::NodeItem(item)) => {
                 match item.node {
                     ItemTrait(_, _, _, ref ms) => {
-                        let (_, p) = ast_util::split_trait_methods(ms.as_slice());
-                        p.iter().map(|m| method(cx, ast_util::local_def(m.id))).collect()
+                        ms.iter().filter_map(|m| match *m {
+                            Required(_) => None,
+                            Provided(ref m) => {
+                                Some(method(cx, ast_util::local_def(m.id)))
+                            }
+                        }).collect()
                     }
                     _ => cx.sess.bug(format!("provided_trait_methods: `{}` is not a trait", id))
                 }
@@ -3772,11 +3776,11 @@ pub fn enum_variants(cx: &ctxt, id: ast::DefId) -> Rc<Vec<Rc<VariantInfo>>> {
           expr, since check_enum_variants also updates the enum_var_cache
          */
         match cx.map.get(id.node) {
-            ast_map::NodeItem(item) => {
+            ast_map::NodeItem(ref item) => {
                 match item.node {
                     ast::ItemEnum(ref enum_definition, _) => {
                         let mut last_discriminant: Option<Disr> = None;
-                        Rc::new(enum_definition.variants.iter().map(|&variant| {
+                        Rc::new(enum_definition.variants.iter().map(|variant| {
 
                             let mut discriminant = match last_discriminant {
                                 Some(val) => val + 1,
@@ -3784,30 +3788,31 @@ pub fn enum_variants(cx: &ctxt, id: ast::DefId) -> Rc<Vec<Rc<VariantInfo>>> {
                             };
 
                             match variant.node.disr_expr {
-                                Some(e) => match const_eval::eval_const_expr_partial(cx, e) {
-                                    Ok(const_eval::const_int(val)) => {
-                                        discriminant = val as Disr
+                                Some(ref e) => {
+                                    match const_eval::eval_const_expr_partial(cx, &**e) {
+                                        Ok(const_eval::const_int(val)) => {
+                                            discriminant = val as Disr
+                                        }
+                                        Ok(const_eval::const_uint(val)) => {
+                                            discriminant = val as Disr
+                                        }
+                                        Ok(_) => {
+                                            cx.sess
+                                              .span_err(e.span,
+                                                        "expected signed integer constant");
+                                        }
+                                        Err(ref err) => {
+                                            cx.sess
+                                              .span_err(e.span,
+                                                        format!("expected constant: {}", *err));
+                                        }
                                     }
-                                    Ok(const_eval::const_uint(val)) => {
-                                        discriminant = val as Disr
-                                    }
-                                    Ok(_) => {
-                                        cx.sess
-                                          .span_err(e.span,
-                                                    "expected signed integer constant");
-                                    }
-                                    Err(ref err) => {
-                                        cx.sess
-                                          .span_err(e.span,
-                                                    format!("expected constant: {}",
-                                                            *err));
-                                    }
-                                },
+                                }
                                 None => {}
                             };
 
                             last_discriminant = Some(discriminant);
-                            Rc::new(VariantInfo::from_ast_variant(cx, variant,
+                            Rc::new(VariantInfo::from_ast_variant(cx, &**variant,
                                                                   discriminant))
                         }).collect())
                     }
@@ -3876,15 +3881,15 @@ pub fn lookup_trait_def(cx: &ctxt, did: ast::DefId) -> Rc<ty::TraitDef> {
 /// Iterate over meta_items of a definition.
 // (This should really be an iterator, but that would require csearch and
 // decoder to use iterators instead of higher-order functions.)
-pub fn each_attr(tcx: &ctxt, did: DefId, f: |@ast::MetaItem| -> bool) -> bool {
+pub fn each_attr(tcx: &ctxt, did: DefId, f: |&ast::MetaItem| -> bool) -> bool {
     if is_local(did) {
         let item = tcx.map.expect_item(did.node);
-        item.attrs.iter().advance(|attr| f(attr.node.value))
+        item.attrs.iter().advance(|attr| f(&*attr.node.value))
     } else {
         let mut cont = true;
         csearch::get_item_attrs(&tcx.sess.cstore, did, |meta_items| {
             if cont {
-                cont = meta_items.iter().advance(|ptrptr| f(*ptrptr));
+                cont = meta_items.iter().advance(|ptrptr| f(&**ptrptr));
             }
         });
         cont

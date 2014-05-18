@@ -104,8 +104,8 @@ fn borrowck_item(this: &mut BorrowckCtxt, item: &ast::Item) {
     // loan step is intended for things that have a data
     // flow dependent conditions.
     match item.node {
-        ast::ItemStatic(_, _, ex) => {
-            gather_loans::gather_loans_in_static_initializer(this, ex);
+        ast::ItemStatic(_, _, ref ex) => {
+            gather_loans::gather_loans_in_static_initializer(this, &**ex);
         }
         _ => {
             visit::walk_item(this, item, ());

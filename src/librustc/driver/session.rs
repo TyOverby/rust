@@ -244,8 +244,7 @@ pub fn build_session_(sopts: config::Options,
 }
 
 // Seems out of place, but it uses session, so I'm putting it here
-pub fn expect<T:Clone>(sess: &Session, opt: Option<T>, msg: || -> StrBuf)
-              -> T {
+pub fn expect<T>(sess: &Session, opt: Option<T>, msg: || -> StrBuf) -> T {
     diagnostic::expect(sess.diagnostic(), opt, msg)
 }
 

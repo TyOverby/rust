@@ -19,10 +19,12 @@ use util::ppaux::ty_to_str;
 
 use std::cmp;
 use std::iter;
+use std::slice;
 use syntax::ast::*;
-use syntax::ast_util::{unguarded_pat, walk_pat};
+use syntax::ast_util::walk_pat;
 use syntax::codemap::{DUMMY_SP, Span};
 use syntax::parse::token;
+use syntax::ptr::P;
 use syntax::visit;
 use syntax::visit::{Visitor, FnKind};
 
@@ -56,7 +58,7 @@ pub fn check_crate(tcx: &ty::ctxt,
 fn check_expr(cx: &mut MatchCheckCtxt, ex: &Expr) {
     visit::walk_expr(cx, ex, ());
     match ex.node {
-      ExprMatch(scrut, ref arms) => {
+      ExprMatch(ref scrut, ref arms) => {
         // First, check legality of move bindings.
         for arm in arms.iter() {
             check_legality_of_move_bindings(cx,
@@ -90,10 +92,15 @@ fn check_expr(cx: &mut MatchCheckCtxt, ex: &Expr) {
           _ => { /* We assume only enum types can be uninhabited */ }
        }
 
-       let pats: Vec<@Pat> = arms.iter()
-                               .filter_map(unguarded_pat)
-                               .flat_map(|pats| pats.move_iter())
-                               .collect();
+       let pats: Vec<&Pat> = arms.iter()
+                                 .filter_map(|a| {
+                                    match a.guard {
+                                        None => Some(a.pats.as_slice()),
+                                        Some(_) => None
+                                    }
+                                  })
+                                 .flat_map(|pats| pats.iter().map(|p| &**p))
+                                 .collect();
        if pats.is_empty() {
            cx.tcx.sess.span_err(ex.span, "non-exhaustive patterns");
        } else {
@@ -125,7 +132,7 @@ fn check_arms(cx: &MatchCheckCtxt, arms: &[Arm]) {
                 }
             };
 
-            walk_pat(*pat, |p| {
+            walk_pat(&**pat, |p| {
                 if pat_matches_nan(p) {
                     cx.tcx.sess.span_warn(p.span, "unmatchable NaN in pattern, \
                                                    use the is_nan method in a guard instead");
@@ -133,7 +140,7 @@ fn check_arms(cx: &MatchCheckCtxt, arms: &[Arm]) {
                 true
             });
 
-            let v = vec!(*pat);
+            let v = vec!(&**pat);
             match is_useful(cx, &seen, v.as_slice()) {
               not_useful => {
                 cx.tcx.sess.span_err(pat.span, "unreachable pattern");
@@ -145,14 +152,14 @@ fn check_arms(cx: &MatchCheckCtxt, arms: &[Arm]) {
     }
 }
 
-fn raw_pat(p: @Pat) -> @Pat {
+fn raw_pat<'a>(p: &'a Pat) -> &'a Pat {
     match p.node {
-      PatIdent(_, _, Some(s)) => { raw_pat(s) }
-      _ => { p }
+        PatIdent(_, _, Some(ref s)) => raw_pat(&**s),
+        _ => p
     }
 }
 
-fn check_exhaustive(cx: &MatchCheckCtxt, sp: Span, pats: Vec<@Pat> ) {
+fn check_exhaustive(cx: &MatchCheckCtxt, sp: Span, pats: Vec<&Pat>) {
     assert!((!pats.is_empty()));
     let ext = match is_useful(cx, &pats.iter().map(|p| vec!(*p)).collect(), [wild()]) {
         not_useful => {
@@ -200,7 +207,7 @@ fn check_exhaustive(cx: &MatchCheckCtxt, sp: Span, pats: Vec<@Pat> ) {
     cx.tcx.sess.span_err(sp, msg);
 }
 
-type matrix = Vec<Vec<@Pat> > ;
+type matrix<'a> = Vec<Vec<&'a Pat>>;
 
 #[deriving(Clone)]
 enum useful {
@@ -231,28 +238,28 @@ enum ctor {
 
 // Note: is_useful doesn't work on empty types, as the paper notes.
 // So it assumes that v is non-empty.
-fn is_useful(cx: &MatchCheckCtxt, m: &matrix, v: &[@Pat]) -> useful {
+fn is_useful(cx: &MatchCheckCtxt, m: &matrix, v: &[&Pat]) -> useful {
     if m.len() == 0u {
         return useful_;
     }
     if m.get(0).len() == 0u {
         return not_useful
     }
-    let real_pat = match m.iter().find(|r| r.get(0).id != 0) {
+    let real_pat = match m.iter().find(|r| r.get(0).id != DUMMY_NODE_ID) {
         Some(r) => {
             match r.get(0).node {
                 // An arm of the form `ref x @ sub_pat` has type
                 // `sub_pat`, not `&sub_pat` as `x` itself does.
-                PatIdent(BindByRef(_), _, Some(sub)) => sub,
+                PatIdent(BindByRef(_), _, Some(ref sub)) => &**sub,
                 _ => *r.get(0)
             }
         }
         None => v[0]
     };
-    let left_ty = if real_pat.id == 0 { ty::mk_nil() }
+    let left_ty = if real_pat.id == DUMMY_NODE_ID { ty::mk_nil() }
                   else { ty::node_id_to_type(cx.tcx, real_pat.id) };
 
-    match pat_ctor_id(cx, v[0]) {
+    match pat_ctor_id(cx, &*v[0]) {
       None => {
         match missing_ctor(cx, m, left_ty) {
           None => {
@@ -315,7 +322,11 @@ fn is_useful(cx: &MatchCheckCtxt, m: &matrix, v: &[@Pat]) -> useful {
           Some(ctor) => {
             match is_useful(cx,
                             &m.iter().filter_map(|r| {
-                                default(cx, r.as_slice())
+                                if is_wild(cx, &**r.get(0)) {
+                                    Some(Vec::from_slice(r.tail()))
+                                } else {
+                                    None
+                                }
                             }).collect::<matrix>(),
                             v.tail()) {
               useful_ => useful(left_ty, ctor),
@@ -332,24 +343,24 @@ fn is_useful(cx: &MatchCheckCtxt, m: &matrix, v: &[@Pat]) -> useful {
 }
 
 fn is_useful_specialized(cx: &MatchCheckCtxt,
-                             m: &matrix,
-                             v: &[@Pat],
-                             ctor: ctor,
-                             arity: uint,
-                             lty: ty::t)
-                             -> useful {
+                         m: &matrix,
+                         v: &[&Pat],
+                         ctor: ctor,
+                         arity: uint,
+                         lty: ty::t)
+                         -> useful {
     let ms = m.iter().filter_map(|r| {
         specialize(cx, r.as_slice(), &ctor, arity, lty)
     }).collect::<matrix>();
     let could_be_useful = is_useful(
         cx, &ms, specialize(cx, v, &ctor, arity, lty).unwrap().as_slice());
     match could_be_useful {
-      useful_ => useful(lty, ctor),
-      u => u,
+        useful_ => useful(lty, ctor),
+        u => u,
     }
 }
 
-fn pat_ctor_id(cx: &MatchCheckCtxt, p: @Pat) -> Option<ctor> {
+fn pat_ctor_id(cx: &MatchCheckCtxt, p: &Pat) -> Option<ctor> {
     let pat = raw_pat(p);
     match pat.node {
       PatWild | PatWildMulti => { None }
@@ -364,9 +375,10 @@ fn pat_ctor_id(cx: &MatchCheckCtxt, p: @Pat) -> Option<ctor> {
           _ => None
         }
       }
-      PatLit(expr) => { Some(val(eval_const_expr(cx.tcx, expr))) }
-      PatRange(lo, hi) => {
-        Some(range(eval_const_expr(cx.tcx, lo), eval_const_expr(cx.tcx, hi)))
+      PatLit(ref expr) => { Some(val(eval_const_expr(cx.tcx, &**expr))) }
+      PatRange(ref lo, ref hi) => {
+        Some(range(eval_const_expr(cx.tcx, &**lo),
+                   eval_const_expr(cx.tcx, &**hi)))
       }
       PatStruct(..) => {
         match cx.tcx.def_map.borrow().find(&pat.id) {
@@ -377,8 +389,8 @@ fn pat_ctor_id(cx: &MatchCheckCtxt, p: @Pat) -> Option<ctor> {
       PatUniq(_) | PatTup(_) | PatRegion(..) => {
         Some(single)
       }
-      PatVec(ref before, slice, ref after) => {
-        match slice {
+      PatVec(ref before, ref slice, ref after) => {
+        match *slice {
           Some(_) => None,
           None => Some(vec(before.len() + after.len()))
         }
@@ -386,7 +398,7 @@ fn pat_ctor_id(cx: &MatchCheckCtxt, p: @Pat) -> Option<ctor> {
     }
 }
 
-fn is_wild(cx: &MatchCheckCtxt, p: @Pat) -> bool {
+fn is_wild(cx: &MatchCheckCtxt, p: &Pat) -> bool {
     let pat = raw_pat(p);
     match pat.node {
       PatWild | PatWildMulti => { true }
@@ -415,7 +427,7 @@ fn missing_ctor(cx: &MatchCheckCtxt,
       ty::ty_enum(eid, _) => {
         let mut found = Vec::new();
         for r in m.iter() {
-            let r = pat_ctor_id(cx, *r.get(0));
+            let r = pat_ctor_id(cx, &**r.get(0));
             for id in r.move_iter() {
                 if !found.contains(&id) {
                     found.push(id);
@@ -437,7 +449,7 @@ fn missing_ctor(cx: &MatchCheckCtxt,
         let mut true_found = false;
         let mut false_found = false;
         for r in m.iter() {
-            match pat_ctor_id(cx, *r.get(0)) {
+            match pat_ctor_id(cx, &**r.get(0)) {
               None => (),
               Some(val(const_bool(true))) => true_found = true,
               Some(val(const_bool(false))) => false_found = true,
@@ -563,303 +575,288 @@ fn ctor_arity(cx: &MatchCheckCtxt, ctor: &ctor, ty: ty::t) -> uint {
     }
 }
 
-fn wild() -> @Pat {
-    @Pat {id: 0, node: PatWild, span: DUMMY_SP}
+fn wild() -> &'static Pat {
+    static WILD_DUMMY_PAT: Pat = Pat {
+        id: DUMMY_NODE_ID,
+        node: PatWild,
+        span: DUMMY_SP
+    };
+    &WILD_DUMMY_PAT
 }
 
-fn wild_multi() -> @Pat {
-    @Pat {id: 0, node: PatWildMulti, span: DUMMY_SP}
+fn wild_multi() -> &'static Pat {
+    static WILD_MULTI_DUMMY_PAT: Pat = Pat {
+        id: DUMMY_NODE_ID,
+        node: PatWildMulti,
+        span: DUMMY_SP
+    };
+    &WILD_MULTI_DUMMY_PAT
 }
 
-fn specialize(cx: &MatchCheckCtxt,
-                  r: &[@Pat],
+fn specialize<'a>(cx: &MatchCheckCtxt,
+                  r: &[&'a Pat],
                   ctor_id: &ctor,
                   arity: uint,
                   left_ty: ty::t)
-               -> Option<Vec<@Pat> > {
+               -> Option<Vec<&'a Pat>> {
     // Sad, but I can't get rid of this easily
-    let r0 = (*raw_pat(r[0])).clone();
-    match r0 {
-        Pat{id: pat_id, node: n, span: pat_span} =>
-            match n {
-            PatWild => {
-                Some(Vec::from_elem(arity, wild()).append(r.tail()))
-            }
-            PatWildMulti => {
-                Some(Vec::from_elem(arity, wild_multi()).append(r.tail()))
-            }
-            PatIdent(_, _, _) => {
-                let opt_def = cx.tcx.def_map.borrow().find_copy(&pat_id);
-                match opt_def {
-                    Some(DefVariant(_, id, _)) => {
-                        if variant(id) == *ctor_id {
-                            Some(Vec::from_slice(r.tail()))
-                        } else {
-                            None
-                        }
-                    }
-                    Some(DefStatic(did, _)) => {
-                        let const_expr =
-                            lookup_const_by_id(cx.tcx, did).unwrap();
-                        let e_v = eval_const_expr(cx.tcx, const_expr);
-                        let match_ = match *ctor_id {
-                            val(ref v) => {
-                                match compare_const_vals(&e_v, v) {
-                                    Some(val1) => (val1 == 0),
-                                    None => {
-                                        cx.tcx.sess.span_err(pat_span,
-                                            "mismatched types between arms");
-                                        false
-                                    }
-                                }
-                            },
-                            range(ref c_lo, ref c_hi) => {
-                                let m1 = compare_const_vals(c_lo, &e_v);
-                                let m2 = compare_const_vals(c_hi, &e_v);
-                                match (m1, m2) {
-                                    (Some(val1), Some(val2)) => {
-                                        (val1 >= 0 && val2 <= 0)
-                                    }
-                                    _ => {
-                                        cx.tcx.sess.span_err(pat_span,
-                                            "mismatched types between ranges");
-                                        false
-                                    }
-                                }
-                            }
-                            single => true,
-                            _ => fail!("type error")
-                        };
-                        if match_ {
-                            Some(Vec::from_slice(r.tail()))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => {
-                        Some(Vec::from_elem(arity, wild()).append(r.tail()))
-                    }
-                }
-            }
-            PatEnum(_, args) => {
-                let def = cx.tcx.def_map.borrow().get_copy(&pat_id);
-                match def {
-                    DefStatic(did, _) => {
-                        let const_expr =
-                            lookup_const_by_id(cx.tcx, did).unwrap();
-                        let e_v = eval_const_expr(cx.tcx, const_expr);
-                        let match_ = match *ctor_id {
-                            val(ref v) =>
-                                match compare_const_vals(&e_v, v) {
-                                    Some(val1) => (val1 == 0),
-                                    None => {
-                                        cx.tcx.sess.span_err(pat_span,
-                                            "mismatched types between arms");
-                                        false
-                                    }
-                                },
-                            range(ref c_lo, ref c_hi) => {
-                                let m1 = compare_const_vals(c_lo, &e_v);
-                                let m2 = compare_const_vals(c_hi, &e_v);
-                                match (m1, m2) {
-                                    (Some(val1), Some(val2)) => (val1 >= 0 && val2 <= 0),
-                                    _ => {
-                                        cx.tcx.sess.span_err(pat_span,
-                                            "mismatched types between ranges");
-                                        false
-                                    }
-                                }
-                            }
-                            single => true,
-                            _ => fail!("type error")
-                        };
-                        if match_ {
-                            Some(Vec::from_slice(r.tail()))
-                        } else {
-                            None
-                        }
-                    }
-                    DefVariant(_, id, _) if variant(id) == *ctor_id => {
-                        let args = match args {
-                            Some(args) => args.iter().map(|x| *x).collect(),
-                            None => Vec::from_elem(arity, wild())
-                        };
-                        Some(args.append(r.tail()))
-                    }
-                    DefVariant(_, _, _) => None,
-
-                    DefFn(..) |
-                    DefStruct(..) => {
-                        let new_args;
-                        match args {
-                            Some(args) => {
-                                new_args = args.iter().map(|x| *x).collect()
-                            }
-                            None => new_args = Vec::from_elem(arity, wild())
-                        }
-                        Some(new_args.append(r.tail()))
-                    }
-                    _ => None
-                }
-            }
-            PatStruct(_, ref pattern_fields, _) => {
-                // Is this a struct or an enum variant?
-                let def = cx.tcx.def_map.borrow().get_copy(&pat_id);
-                match def {
-                    DefVariant(_, variant_id, _) => {
-                        if variant(variant_id) == *ctor_id {
-                            let struct_fields = ty::lookup_struct_fields(cx.tcx, variant_id);
-                            let args = struct_fields.iter().map(|sf| {
-                                match pattern_fields.iter().find(|f| f.ident.name == sf.name) {
-                                    Some(f) => f.pat,
-                                    _ => wild()
-                                }
-                            }).collect::<Vec<_>>();
-                            Some(args.append(r.tail()))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => {
-                        // Grab the class data that we care about.
-                        let class_fields;
-                        let class_id;
-                        match ty::get(left_ty).sty {
-                            ty::ty_struct(cid, _) => {
-                                class_id = cid;
-                                class_fields =
-                                    ty::lookup_struct_fields(cx.tcx,
-                                                             class_id);
-                            }
-                            _ => {
-                                cx.tcx.sess.span_bug(
-                                    pat_span,
-                                    format!("struct pattern resolved to {}, \
-                                          not a struct",
-                                         ty_to_str(cx.tcx, left_ty)));
-                            }
-                        }
-                        let args = class_fields.iter().map(|class_field| {
-                            match pattern_fields.iter().find(|f|
-                                            f.ident.name == class_field.name) {
-                                Some(f) => f.pat,
-                                _ => wild()
-                            }
-                        }).collect::<Vec<_>>();
-                        Some(args.append(r.tail()))
-                    }
-                }
-            }
-            PatTup(args) => {
-                Some(args.iter().map(|x| *x).collect::<Vec<_>>().append(r.tail()))
-            }
-            PatUniq(a) | PatRegion(a) => {
-                Some((vec!(a)).append(r.tail()))
-            }
-            PatLit(expr) => {
-                let e_v = eval_const_expr(cx.tcx, expr);
-                let match_ = match *ctor_id {
-                    val(ref v) => {
-                        match compare_const_vals(&e_v, v) {
-                            Some(val1) => val1 == 0,
-                            None => {
-                                cx.tcx.sess.span_err(pat_span,
-                                    "mismatched types between arms");
-                                false
-                            }
-                        }
-                    },
-                    range(ref c_lo, ref c_hi) => {
-                        let m1 = compare_const_vals(c_lo, &e_v);
-                        let m2 = compare_const_vals(c_hi, &e_v);
-                        match (m1, m2) {
-                            (Some(val1), Some(val2)) => (val1 >= 0 && val2 <= 0),
-                            _ => {
-                                cx.tcx.sess.span_err(pat_span,
-                                    "mismatched types between ranges");
-                                false
-                            }
-                        }
-                    }
-                    single => true,
-                    _ => fail!("type error")
-                };
-                if match_ {
-                    Some(Vec::from_slice(r.tail()))
-                } else {
-                    None
-                }
-            }
-            PatRange(lo, hi) => {
-                let (c_lo, c_hi) = match *ctor_id {
-                    val(ref v) => ((*v).clone(), (*v).clone()),
-                    range(ref lo, ref hi) => ((*lo).clone(), (*hi).clone()),
-                    single => return Some(Vec::from_slice(r.tail())),
-                    _ => fail!("type error")
-                };
-                let v_lo = eval_const_expr(cx.tcx, lo);
-                let v_hi = eval_const_expr(cx.tcx, hi);
-
-                let m1 = compare_const_vals(&c_lo, &v_lo);
-                let m2 = compare_const_vals(&c_hi, &v_hi);
-                match (m1, m2) {
-                    (Some(val1), Some(val2)) if val1 >= 0 && val2 <= 0 => {
-                        Some(Vec::from_slice(r.tail()))
-                    },
-                    (Some(_), Some(_)) => None,
-                    _ => {
-                        cx.tcx.sess.span_err(pat_span,
-                            "mismatched types between ranges");
+    let pat: &'a Pat = raw_pat(r[0]);
+    let mut tail = r.tail().iter().map(|x| *x);
+    match pat.node {
+        PatWild => {
+            Some(iter::range(0, arity).map(|_| -> &'a Pat wild()).chain(tail).collect())
+        }
+        PatWildMulti => {
+            Some(iter::range(0, arity).map(|_| -> &'a Pat wild_multi()).chain(tail).collect())
+        }
+        PatIdent(_, _, _) => {
+            let opt_def = cx.tcx.def_map.borrow().find_copy(&pat.id);
+            match opt_def {
+                Some(DefVariant(_, id, _)) => {
+                    if variant(id) == *ctor_id {
+                        Some(tail.collect())
+                    } else {
                         None
                     }
                 }
+                Some(DefStatic(did, _)) => {
+                    let const_expr =
+                        lookup_const_by_id(cx.tcx, did).unwrap();
+                    let e_v = eval_const_expr(cx.tcx, const_expr);
+                    let match_ = match *ctor_id {
+                        val(ref v) => {
+                            match compare_const_vals(&e_v, v) {
+                                Some(val1) => (val1 == 0),
+                                None => {
+                                    cx.tcx.sess.span_err(pat.span,
+                                        "mismatched types between arms");
+                                    false
+                                }
+                            }
+                        },
+                        range(ref c_lo, ref c_hi) => {
+                            let m1 = compare_const_vals(c_lo, &e_v);
+                            let m2 = compare_const_vals(c_hi, &e_v);
+                            match (m1, m2) {
+                                (Some(val1), Some(val2)) => {
+                                    (val1 >= 0 && val2 <= 0)
+                                }
+                                _ => {
+                                    cx.tcx.sess.span_err(pat.span,
+                                        "mismatched types between ranges");
+                                    false
+                                }
+                            }
+                        }
+                        single => true,
+                        _ => fail!("type error")
+                    };
+                    if match_ {
+                        Some(tail.collect())
+                    } else {
+                        None
+                    }
+                }
+                _ => {
+                    Some(iter::range(0, arity).map(|_| -> &'a Pat wild()).chain(tail).collect())
+                }
             }
-            PatVec(before, slice, after) => {
-                match *ctor_id {
-                    vec(_) => {
-                        let num_elements = before.len() + after.len();
-                        if num_elements < arity && slice.is_some() {
-                            let mut result = Vec::new();
-                            let wilds = Vec::from_elem(arity - num_elements, wild());
-                            result.push_all_move(before);
-                            result.push_all_move(wilds);
-                            result.push_all_move(after);
-                            result.push_all(r.tail());
-                            Some(result)
-                        } else if num_elements == arity {
-                            let mut result = Vec::new();
-                            result.push_all_move(before);
-                            result.push_all_move(after);
-                            result.push_all(r.tail());
-                            Some(result)
-                        } else {
-                            None
+        }
+        PatEnum(_, ref args) => {
+            let def = cx.tcx.def_map.borrow().get_copy(&pat.id);
+            match def {
+                DefStatic(did, _) => {
+                    let const_expr =
+                        lookup_const_by_id(cx.tcx, did).unwrap();
+                    let e_v = eval_const_expr(cx.tcx, const_expr);
+                    let match_ = match *ctor_id {
+                        val(ref v) =>
+                            match compare_const_vals(&e_v, v) {
+                                Some(val1) => (val1 == 0),
+                                None => {
+                                    cx.tcx.sess.span_err(pat.span,
+                                        "mismatched types between arms");
+                                    false
+                                }
+                            },
+                        range(ref c_lo, ref c_hi) => {
+                            let m1 = compare_const_vals(c_lo, &e_v);
+                            let m2 = compare_const_vals(c_hi, &e_v);
+                            match (m1, m2) {
+                                (Some(val1), Some(val2)) => (val1 >= 0 && val2 <= 0),
+                                _ => {
+                                    cx.tcx.sess.span_err(pat.span,
+                                        "mismatched types between ranges");
+                                    false
+                                }
+                            }
+                        }
+                        single => true,
+                        _ => fail!("type error")
+                    };
+                    if match_ {
+                        Some(tail.collect())
+                    } else {
+                        None
+                    }
+                }
+                DefVariant(_, id, _) if variant(id) == *ctor_id => {
+                    Some(match *args {
+                        Some(ref args) => {
+                            args.iter().map(|x| -> &'a Pat &**x).chain(tail).collect()
+                        }
+                        None => {
+                            iter::range(0, arity).map(|_| -> &'a Pat wild())
+                                                 .chain(tail).collect()
+                        }
+                    })
+                }
+                DefVariant(_, _, _) => None,
+
+                DefFn(..) |
+                DefStruct(..) => {
+                    Some(match *args {
+                        Some(ref args) => {
+                            args.iter().map(|x| -> &'a Pat &**x).chain(tail).collect()
+                        }
+                        None => {
+                            iter::range(0, arity).map(|_| -> &'a Pat wild())
+                                                 .chain(tail).collect()
+                        }
+                    })
+                }
+                _ => None
+            }
+        }
+        PatStruct(_, ref pattern_fields, _) => {
+            // Is this a struct or an enum variant?
+            let struct_id = match cx.tcx.def_map.borrow().get_copy(&pat.id) {
+                DefVariant(_, variant_id, _) => {
+                    if variant(variant_id) == *ctor_id {
+                        Some(variant_id)
+                    } else {
+                        None
+                    }
+                }
+                _ => match ty::get(left_ty).sty {
+                    ty::ty_struct(id, _) => Some(id),
+                    _ => {
+                        cx.tcx.sess.span_bug(
+                            pat.span,
+                            format!("struct pattern resolved to {}, \
+                                    not a struct",
+                                    ty_to_str(cx.tcx, left_ty)));
+                    }
+                }
+            };
+            match struct_id {
+                Some(id) => {
+                    Some(ty::lookup_struct_fields(cx.tcx, id).iter().map(|sf| -> &'a Pat {
+                        match pattern_fields.iter().find(|f| f.ident.name == sf.name) {
+                            Some(ref f) => &*f.pat,
+                            None => wild()
+                        }
+                    }).chain(tail).collect())
+                }
+                None => None
+            }
+        }
+        PatTup(ref args) => {
+            Some(args.iter().map(|x| -> &'a Pat &**x).chain(tail).collect())
+        }
+        PatUniq(ref a) | PatRegion(ref a) => {
+            Some([a].iter().map(|&x| -> &'a Pat &**x).chain(tail).collect())
+        }
+        PatLit(ref expr) => {
+            let e_v = eval_const_expr(cx.tcx, &**expr);
+            let match_ = match *ctor_id {
+                val(ref v) => {
+                    match compare_const_vals(&e_v, v) {
+                        Some(val1) => val1 == 0,
+                        None => {
+                            cx.tcx.sess.span_err(pat.span,
+                                "mismatched types between arms");
+                            false
                         }
                     }
-                    _ => None
+                },
+                range(ref c_lo, ref c_hi) => {
+                    let m1 = compare_const_vals(c_lo, &e_v);
+                    let m2 = compare_const_vals(c_hi, &e_v);
+                    match (m1, m2) {
+                        (Some(val1), Some(val2)) => (val1 >= 0 && val2 <= 0),
+                        _ => {
+                            cx.tcx.sess.span_err(pat.span,
+                                "mismatched types between ranges");
+                            false
+                        }
+                    }
                 }
+                single => true,
+                _ => fail!("type error")
+            };
+            if match_ {
+                Some(tail.collect())
+            } else {
+                None
+            }
+        }
+        PatRange(ref lo, ref hi) => {
+            let (c_lo, c_hi) = match *ctor_id {
+                val(ref v) => ((*v).clone(), (*v).clone()),
+                range(ref lo, ref hi) => ((*lo).clone(), (*hi).clone()),
+                single => return Some(tail.collect()),
+                _ => fail!("type error")
+            };
+            let v_lo = eval_const_expr(cx.tcx, &**lo);
+            let v_hi = eval_const_expr(cx.tcx, &**hi);
+
+            let m1 = compare_const_vals(&c_lo, &v_lo);
+            let m2 = compare_const_vals(&c_hi, &v_hi);
+            match (m1, m2) {
+                (Some(val1), Some(val2)) if val1 >= 0 && val2 <= 0 => {
+                    Some(tail.collect())
+                },
+                (Some(_), Some(_)) => None,
+                _ => {
+                    cx.tcx.sess.span_err(pat.span,
+                        "mismatched types between ranges");
+                    None
+                }
+            }
+        }
+        PatVec(ref before, ref slice, ref after) => {
+            match *ctor_id {
+                vec(_) => {
+                    let num_elements = before.len() + after.len();
+                    if num_elements < arity && slice.is_some() {
+                        Some(before.iter().map(|p| -> &'a Pat &**p)
+                            .chain(iter::range(0, arity - num_elements).map(|_| -> &'a Pat wild()))
+                            .chain(after.iter().map(|p| -> &'a Pat &**p))
+                            .chain(tail).collect())
+                    } else if num_elements == arity {
+                        Some(before.iter().map(|p| -> &'a Pat &**p)
+                            .chain(after.iter().map(|p| -> &'a Pat &**p))
+                            .chain(tail).collect())
+                    } else {
+                        None
+                    }
+                }
+                _ => None
             }
         }
     }
 }
 
-fn default(cx: &MatchCheckCtxt, r: &[@Pat]) -> Option<Vec<@Pat> > {
-    if is_wild(cx, r[0]) {
-        Some(Vec::from_slice(r.tail()))
-    } else {
-        None
-    }
-}
-
 fn check_local(cx: &mut MatchCheckCtxt, loc: &Local) {
     visit::walk_local(cx, loc, ());
-    if is_refutable(cx, loc.pat) {
+    if is_refutable(cx, &*loc.pat) {
         cx.tcx.sess.span_err(loc.pat.span,
                              "refutable pattern in local binding");
     }
 
     // Check legality of move bindings.
-    check_legality_of_move_bindings(cx, false, [ loc.pat ]);
+    check_legality_of_move_bindings(cx, false, slice::ref_slice(&loc.pat));
 }
 
 fn check_fn(cx: &mut MatchCheckCtxt,
@@ -869,7 +866,7 @@ fn check_fn(cx: &mut MatchCheckCtxt,
             sp: Span) {
     visit::walk_fn(cx, kind, decl, body, sp, ());
     for input in decl.inputs.iter() {
-        if is_refutable(cx, input.pat) {
+        if is_refutable(cx, &*input.pat) {
             cx.tcx.sess.span_err(input.pat.span,
                                  "refutable pattern in function argument");
         }
@@ -879,43 +876,43 @@ fn check_fn(cx: &mut MatchCheckCtxt,
 fn is_refutable(cx: &MatchCheckCtxt, pat: &Pat) -> bool {
     let opt_def = cx.tcx.def_map.borrow().find_copy(&pat.id);
     match opt_def {
-      Some(DefVariant(enum_id, _, _)) => {
-        if ty::enum_variants(cx.tcx, enum_id).len() != 1u {
-            return true;
+        Some(DefVariant(enum_id, _, _)) => {
+            if ty::enum_variants(cx.tcx, enum_id).len() != 1u {
+                return true;
+            }
         }
-      }
-      Some(DefStatic(..)) => return true,
-      _ => ()
+        Some(DefStatic(..)) => return true,
+        _ => ()
     }
 
     match pat.node {
-      PatUniq(sub) | PatRegion(sub) | PatIdent(_, _, Some(sub)) => {
-        is_refutable(cx, sub)
-      }
-      PatWild | PatWildMulti | PatIdent(_, _, None) => { false }
-      PatLit(lit) => {
-          match lit.node {
-            ExprLit(lit) => {
-                match lit.node {
-                    LitNil => false,    // `()`
-                    _ => true,
+        PatUniq(ref sub) | PatRegion(ref sub) | PatIdent(_, _, Some(ref sub)) => {
+            is_refutable(cx, &**sub)
+        }
+        PatWild | PatWildMulti | PatIdent(_, _, None) => { false }
+        PatLit(ref lit) => {
+            match lit.node {
+                ExprLit(ref lit) => {
+                    match lit.node {
+                        LitNil => false,    // `()`
+                        _ => true,
+                    }
                 }
+                _ => true,
             }
-            _ => true,
-          }
-      }
-      PatRange(_, _) => { true }
-      PatStruct(_, ref fields, _) => {
-        fields.iter().any(|f| is_refutable(cx, f.pat))
-      }
-      PatTup(ref elts) => {
-        elts.iter().any(|elt| is_refutable(cx, *elt))
-      }
-      PatEnum(_, Some(ref args)) => {
-        args.iter().any(|a| is_refutable(cx, *a))
-      }
-      PatEnum(_,_) => { false }
-      PatVec(..) => { true }
+        }
+        PatRange(_, _) => { true }
+        PatStruct(_, ref fields, _) => {
+            fields.iter().any(|f| is_refutable(cx, &*f.pat))
+        }
+        PatTup(ref elts) => {
+            elts.iter().any(|elt| is_refutable(cx, &**elt))
+        }
+        PatEnum(_, Some(ref args)) => {
+            args.iter().any(|a| is_refutable(cx, &**a))
+        }
+        PatEnum(_,_) => { false }
+        PatVec(..) => { true }
     }
 }
 
@@ -923,12 +920,12 @@ fn is_refutable(cx: &MatchCheckCtxt, pat: &Pat) -> bool {
 
 fn check_legality_of_move_bindings(cx: &MatchCheckCtxt,
                                    has_guard: bool,
-                                   pats: &[@Pat]) {
+                                   pats: &[P<Pat>]) {
     let tcx = cx.tcx;
     let def_map = &tcx.def_map;
     let mut by_ref_span = None;
     for pat in pats.iter() {
-        pat_bindings(def_map, *pat, |bm, _, span, _path| {
+        pat_bindings(def_map, &**pat, |bm, _, span, _path| {
             match bm {
                 BindByRef(_) => {
                     by_ref_span = Some(span);
@@ -939,11 +936,11 @@ fn check_legality_of_move_bindings(cx: &MatchCheckCtxt,
         })
     }
 
-    let check_move: |&Pat, Option<@Pat>| = |p, sub| {
+    let check_move: |&Pat, &Option<P<Pat>>| = |p, sub| {
         // check legality of moving out of the enum
 
         // x @ Foo(..) is legal, but x @ Foo(y) isn't.
-        if sub.map_or(false, |p| pat_contains_bindings(def_map, p)) {
+        if sub.as_ref().map_or(false, |p| pat_contains_bindings(def_map, &**p)) {
             tcx.sess.span_err(
                 p.span,
                 "cannot bind by-move with sub-bindings");
@@ -963,10 +960,10 @@ fn check_legality_of_move_bindings(cx: &MatchCheckCtxt,
     };
 
     for pat in pats.iter() {
-        walk_pat(*pat, |p| {
+        walk_pat(&**pat, |p| {
             if pat_is_binding(def_map, p) {
                 match p.node {
-                    PatIdent(BindByValue(_), _, sub) => {
+                    PatIdent(BindByValue(_), _, ref sub) => {
                         let pat_ty = ty::node_id_to_type(tcx, p.id);
                         if ty::type_moves_by_default(tcx, pat_ty) {
                             check_move(p, sub);

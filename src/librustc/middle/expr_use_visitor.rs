@@ -22,6 +22,7 @@ use middle::typeck;
 use syntax::ast;
 use syntax::ast_util;
 use syntax::codemap::{Span};
+use syntax::ptr::P;
 use util::ppaux::Repr;
 
 ///////////////////////////////////////////////////////////////////////////
@@ -148,7 +149,7 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 ty::ReScope(body.id), // Args live only as long as the fn body.
                 arg_ty);
 
-            self.walk_pat(arg_cmt, arg.pat);
+            self.walk_pat(arg_cmt, &*arg.pat);
         }
     }
 
@@ -164,9 +165,9 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
         self.delegate.consume(consume_id, consume_span, cmt, mode);
     }
 
-    fn consume_exprs(&mut self, exprs: &Vec<@ast::Expr>) {
-        for &expr in exprs.iter() {
-            self.consume_expr(expr);
+    fn consume_exprs(&mut self, exprs: &Vec<P<ast::Expr>>) {
+        for expr in exprs.iter() {
+            self.consume_expr(&**expr);
         }
     }
 
@@ -177,7 +178,7 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
         self.delegate_consume(expr.id, expr.span, cmt);
 
         match expr.node {
-            ast::ExprParen(subexpr) => {
+            ast::ExprParen(ref subexpr) => {
                 // Argh but is ExprParen horrible. So, if we consume
                 // `(x)`, that generally is also consuming `x`, UNLESS
                 // there are adjustments on the `(x)` expression
@@ -185,7 +186,7 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 if self.typer.adjustments().borrow().contains_key(&expr.id) {
                     self.walk_expr(expr);
                 } else {
-                    self.consume_expr(subexpr);
+                    self.consume_expr(&**subexpr);
                 }
             }
 
@@ -231,31 +232,31 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
         self.walk_adjustment(expr);
 
         match expr.node {
-            ast::ExprParen(subexpr) => {
-                self.walk_expr(subexpr)
+            ast::ExprParen(ref subexpr) => {
+                self.walk_expr(&**subexpr)
             }
 
             ast::ExprPath(..) => { }
 
-            ast::ExprUnary(ast::UnDeref, base) => {      // *base
-                if !self.walk_overloaded_operator(expr, base, []) {
-                    self.select_from_expr(base);
+            ast::ExprUnary(ast::UnDeref, ref base) => { // *base
+                if !self.walk_overloaded_operator(expr, &**base, None) {
+                    self.select_from_expr(&**base);
                 }
             }
 
-            ast::ExprField(base, _, _) => {         // base.f
-                self.select_from_expr(base);
+            ast::ExprField(ref base, _, _) => {     // base.f
+                self.select_from_expr(&**base);
             }
 
-            ast::ExprIndex(lhs, rhs) => {           // lhs[rhs]
-                if !self.walk_overloaded_operator(expr, lhs, [rhs]) {
-                    self.select_from_expr(lhs);
-                    self.consume_expr(rhs);
+            ast::ExprIndex(ref lhs, ref rhs) => {   // lhs[rhs]
+                if !self.walk_overloaded_operator(expr, &**lhs, Some(&**rhs)) {
+                    self.select_from_expr(&**lhs);
+                    self.consume_expr(&**rhs);
                 }
             }
 
-            ast::ExprCall(callee, ref args) => {    // callee(args)
-                self.walk_callee(expr, callee);
+            ast::ExprCall(ref callee, ref args) => { // callee(args)
+                self.walk_callee(expr, &**callee);
                 self.consume_exprs(args);
             }
 
@@ -263,7 +264,7 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 self.consume_exprs(args);
             }
 
-            ast::ExprStruct(_, ref fields, opt_with) => {
+            ast::ExprStruct(_, ref fields, ref opt_with) => {
                 self.walk_struct_expr(expr, fields, opt_with);
             }
 
@@ -271,19 +272,19 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 self.consume_exprs(exprs);
             }
 
-            ast::ExprIf(cond_expr, then_blk, opt_else_expr) => {
-                self.consume_expr(cond_expr);
-                self.walk_block(then_blk);
+            ast::ExprIf(ref cond_expr, ref then_blk, ref opt_else_expr) => {
+                self.consume_expr(&**cond_expr);
+                self.walk_block(&**then_blk);
                 for else_expr in opt_else_expr.iter() {
-                    self.consume_expr(*else_expr);
+                    self.consume_expr(&**else_expr);
                 }
             }
 
-            ast::ExprMatch(discr, ref arms) => {
+            ast::ExprMatch(ref discr, ref arms) => {
                 // treatment of the discriminant is handled while
                 // walking the arms:
-                self.walk_expr(discr);
-                let discr_cmt = return_if_err!(self.mc.cat_expr(discr));
+                self.walk_expr(&**discr);
+                let discr_cmt = return_if_err!(self.mc.cat_expr(&**discr));
                 for arm in arms.iter() {
                     self.walk_arm(discr_cmt.clone(), arm);
                 }
@@ -293,26 +294,26 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 self.consume_exprs(exprs);
             }
 
-            ast::ExprAddrOf(m, base) => {   // &base
+            ast::ExprAddrOf(m, ref base) => {   // &base
                 // make sure that the thing we are pointing out stays valid
                 // for the lifetime `scope_r` of the resulting ptr:
                 let expr_ty = ty::expr_ty(self.tcx(), expr);
                 if !ty::type_is_bot(expr_ty) {
                     let r = ty::ty_region(self.tcx(), expr.span, expr_ty);
                     let bk = ty::BorrowKind::from_mutbl(m);
-                    self.borrow_expr(base, r, bk, AddrOf);
+                    self.borrow_expr(&**base, r, bk, AddrOf);
                 } else {
-                    self.walk_expr(base);
+                    self.walk_expr(&**base);
                 }
             }
 
             ast::ExprInlineAsm(ref ia) => {
-                for &(_, input) in ia.inputs.iter() {
-                    self.consume_expr(input);
+                for &(_, ref input) in ia.inputs.iter() {
+                    self.consume_expr(&**input);
                 }
 
-                for &(_, output) in ia.outputs.iter() {
-                    self.mutate_expr(expr, output, JustWrite);
+                for &(_, ref output) in ia.outputs.iter() {
+                    self.mutate_expr(expr, &**output, JustWrite);
                 }
             }
 
@@ -320,59 +321,59 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
             ast::ExprAgain(..) |
             ast::ExprLit(..) => {}
 
-            ast::ExprLoop(blk, _) => {
-                self.walk_block(blk);
+            ast::ExprLoop(ref blk, _) => {
+                self.walk_block(&**blk);
             }
 
-            ast::ExprWhile(cond_expr, blk) => {
-                self.consume_expr(cond_expr);
-                self.walk_block(blk);
+            ast::ExprWhile(ref cond_expr, ref blk) => {
+                self.consume_expr(&**cond_expr);
+                self.walk_block(&**blk);
             }
 
             ast::ExprForLoop(..) => fail!("non-desugared expr_for_loop"),
 
-            ast::ExprUnary(_, lhs) => {
-                if !self.walk_overloaded_operator(expr, lhs, []) {
-                    self.consume_expr(lhs);
+            ast::ExprUnary(_, ref lhs) => {
+                if !self.walk_overloaded_operator(expr, &**lhs, None) {
+                    self.consume_expr(&**lhs);
                 }
             }
 
-            ast::ExprBinary(_, lhs, rhs) => {
-                if !self.walk_overloaded_operator(expr, lhs, [rhs]) {
-                    self.consume_expr(lhs);
-                    self.consume_expr(rhs);
+            ast::ExprBinary(_, ref lhs, ref rhs) => {
+                if !self.walk_overloaded_operator(expr, &**lhs, Some(&**rhs)) {
+                    self.consume_expr(&**lhs);
+                    self.consume_expr(&**rhs);
                 }
             }
 
-            ast::ExprBlock(blk) => {
-                self.walk_block(blk);
+            ast::ExprBlock(ref blk) => {
+                self.walk_block(&**blk);
             }
 
             ast::ExprRet(ref opt_expr) => {
                 for expr in opt_expr.iter() {
-                    self.consume_expr(*expr);
+                    self.consume_expr(&**expr);
                 }
             }
 
-            ast::ExprAssign(lhs, rhs) => {
-                self.mutate_expr(expr, lhs, JustWrite);
-                self.consume_expr(rhs);
+            ast::ExprAssign(ref lhs, ref rhs) => {
+                self.mutate_expr(expr, &**lhs, JustWrite);
+                self.consume_expr(&**rhs);
             }
 
-            ast::ExprCast(base, _) => {
-                self.consume_expr(base);
+            ast::ExprCast(ref base, _) => {
+                self.consume_expr(&**base);
             }
 
-            ast::ExprAssignOp(_, lhs, rhs) => {
+            ast::ExprAssignOp(_, ref lhs, ref rhs) => {
                 // This will have to change if/when we support
                 // overloaded operators for `+=` and so forth.
-                self.mutate_expr(expr, lhs, WriteAndRead);
-                self.consume_expr(rhs);
+                self.mutate_expr(expr, &**lhs, WriteAndRead);
+                self.consume_expr(&**rhs);
             }
 
-            ast::ExprRepeat(base, count) => {
-                self.consume_expr(base);
-                self.consume_expr(count);
+            ast::ExprRepeat(ref base, ref count) => {
+                self.consume_expr(&**base);
+                self.consume_expr(&**count);
             }
 
             ast::ExprFnBlock(..) |
@@ -380,13 +381,13 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 self.walk_captures(expr)
             }
 
-            ast::ExprVstore(base, _) => {
-                self.consume_expr(base);
+            ast::ExprVstore(ref base, _) => {
+                self.consume_expr(&**base);
             }
 
-            ast::ExprBox(place, base) => {
-                self.consume_expr(place);
-                self.consume_expr(base);
+            ast::ExprBox(ref place, ref base) => {
+                self.consume_expr(&**place);
+                self.consume_expr(&**base);
             }
 
             ast::ExprMac(..) => {
@@ -429,10 +430,10 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
 
     fn walk_stmt(&mut self, stmt: &ast::Stmt) {
         match stmt.node {
-            ast::StmtDecl(decl, _) => {
+            ast::StmtDecl(ref decl, _) => {
                 match decl.node {
-                    ast::DeclLocal(local) => {
-                        self.walk_local(local);
+                    ast::DeclLocal(ref local) => {
+                        self.walk_local(&**local);
                     }
 
                     ast::DeclItem(_) => {
@@ -442,9 +443,9 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 }
             }
 
-            ast::StmtExpr(expr, _) |
-            ast::StmtSemi(expr, _) => {
-                self.consume_expr(expr);
+            ast::StmtExpr(ref expr, _) |
+            ast::StmtSemi(ref expr, _) => {
+                self.consume_expr(&**expr);
             }
 
             ast::StmtMac(..) => {
@@ -455,23 +456,23 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
         }
     }
 
-    fn walk_local(&mut self, local: @ast::Local) {
+    fn walk_local(&mut self, local: &ast::Local) {
         match local.init {
             None => {
                 let delegate = &mut self.delegate;
-                pat_util::pat_bindings(&self.typer.tcx().def_map, local.pat, |_, id, span, _| {
+                pat_util::pat_bindings(&self.typer.tcx().def_map, &*local.pat, |_, id, span, _| {
                     delegate.decl_without_init(id, span);
                 })
             }
 
-            Some(expr) => {
+            Some(ref expr) => {
                 // Variable declarations with
                 // initializers are considered
                 // "assigns", which is handled by
                 // `walk_pat`:
-                self.walk_expr(expr);
-                let init_cmt = return_if_err!(self.mc.cat_expr(expr));
-                self.walk_pat(init_cmt, local.pat);
+                self.walk_expr(&**expr);
+                let init_cmt = return_if_err!(self.mc.cat_expr(&**expr));
+                self.walk_pat(init_cmt, &*local.pat);
             }
         }
     }
@@ -485,25 +486,25 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
         debug!("walk_block(blk.id={:?})", blk.id);
 
         for stmt in blk.stmts.iter() {
-            self.walk_stmt(*stmt);
+            self.walk_stmt(&**stmt);
         }
 
         for tail_expr in blk.expr.iter() {
-            self.consume_expr(*tail_expr);
+            self.consume_expr(&**tail_expr);
         }
     }
 
     fn walk_struct_expr(&mut self,
                         _expr: &ast::Expr,
                         fields: &Vec<ast::Field>,
-                        opt_with: Option<@ast::Expr>) {
+                        opt_with: &Option<P<ast::Expr>>) {
         // Consume the expressions supplying values for each field.
         for field in fields.iter() {
-            self.consume_expr(field.expr);
+            self.consume_expr(&*field.expr);
         }
 
-        let with_expr = match opt_with {
-            Some(w) => { w }
+        let with_expr = match *opt_with {
+            Some(ref w) => &**w,
             None => { return; }
         };
 
@@ -656,7 +657,7 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
     fn walk_overloaded_operator(&mut self,
                                 expr: &ast::Expr,
                                 receiver: &ast::Expr,
-                                args: &[@ast::Expr])
+                                rhs: Option<&ast::Expr>)
                                 -> bool
     {
         if !self.typer.is_method_call(expr.id) {
@@ -672,25 +673,25 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
         let r = ty::ReScope(expr.id);
         let bk = ty::ImmBorrow;
 
-        for &arg in args.iter() {
+        for &arg in rhs.iter() {
             self.borrow_expr(arg, r, bk, OverloadedOperator);
         }
         return true;
     }
 
     fn walk_arm(&mut self, discr_cmt: mc::cmt, arm: &ast::Arm) {
-        for &pat in arm.pats.iter() {
-            self.walk_pat(discr_cmt.clone(), pat);
+        for pat in arm.pats.iter() {
+            self.walk_pat(discr_cmt.clone(), &**pat);
         }
 
         for guard in arm.guard.iter() {
-            self.consume_expr(*guard);
+            self.consume_expr(&**guard);
         }
 
-        self.consume_expr(arm.body);
+        self.consume_expr(&*arm.body);
     }
 
-    fn walk_pat(&mut self, cmt_discr: mc::cmt, pat: @ast::Pat) {
+    fn walk_pat(&mut self, cmt_discr: mc::cmt, pat: &ast::Pat) {
         debug!("walk_pat cmt_discr={} pat={}", cmt_discr.repr(self.tcx()),
                pat.repr(self.tcx()));
         let mc = &self.mc;
@@ -741,14 +742,14 @@ impl<'d,'t,TYPER:mc::Typer> ExprUseVisitor<'d,'t,TYPER> {
                 }
             } else {
                 match pat.node {
-                    ast::PatVec(_, Some(slice_pat), _) => {
+                    ast::PatVec(_, Some(ref slice_pat), _) => {
                         // The `slice_pat` here creates a slice into
                         // the original vector.  This is effectively a
                         // borrow of the elements of the vector being
                         // matched.
 
                         let (slice_cmt, slice_mutbl, slice_r) = {
-                            match mc.cat_slice_pattern(cmt_pat, slice_pat) {
+                            match mc.cat_slice_pattern(cmt_pat, &**slice_pat) {
                                 Ok(v) => v,
                                 Err(()) => {
                                     tcx.sess.span_bug(slice_pat.span,

@@ -231,7 +231,7 @@ fn get_extern_rust_fn(ccx: &CrateContext, inputs: &[ty::t], output: ty::t,
 
     let f = decl_rust_fn(ccx, false, inputs, output, name);
     csearch::get_item_attrs(&ccx.sess().cstore, did, |meta_items| {
-        set_llvm_fn_attrs(meta_items.iter().map(|&x| attr::mk_attr(x))
+        set_llvm_fn_attrs(meta_items.move_iter().map(|x| attr::mk_attr(x))
                                     .collect::<Vec<_>>().as_slice(), f)
     });
 
@@ -976,8 +976,8 @@ pub fn init_local<'a>(bcx: &'a Block<'a>, local: &ast::Local)
     if ignore_lhs(bcx, local) {
         // Handle let _ = e; just like e;
         match local.init {
-            Some(init) => {
-                return controlflow::trans_stmt_semi(bcx, init)
+            Some(ref init) => {
+                return controlflow::trans_stmt_semi(bcx, &**init)
             }
             None => { return bcx; }
         }
@@ -1281,7 +1281,7 @@ fn copy_args_to_allocas<'a>(fcx: &FunctionContext<'a>,
         // This alloca should be optimized away by LLVM's mem-to-reg pass in
         // the event it's not truly needed.
 
-        bcx = _match::store_arg(bcx, args[i].pat, arg_datum, arg_scope_id);
+        bcx = _match::store_arg(bcx, &*args[i].pat, arg_datum, arg_scope_id);
 
         if fcx.ccx.sess().opts.debuginfo == FullDebugInfo {
             debuginfo::create_argument_metadata(bcx, &args[i]);
@@ -1536,21 +1536,21 @@ fn trans_enum_variant_or_tuple_like_struct(ccx: &CrateContext,
 fn trans_enum_def(ccx: &CrateContext, enum_definition: &ast::EnumDef,
                   id: ast::NodeId, vi: &[Rc<ty::VariantInfo>],
                   i: &mut uint) {
-    for &variant in enum_definition.variants.iter() {
+    for variant in enum_definition.variants.iter() {
         let disr_val = vi[*i].disr_val;
         *i += 1;
 
         match variant.node.kind {
             ast::TupleVariantKind(ref args) if args.len() > 0 => {
                 let llfn = get_item_val(ccx, variant.node.id);
-                trans_enum_variant(ccx, id, variant, args.as_slice(),
+                trans_enum_variant(ccx, id, &**variant, args.as_slice(),
                                    disr_val, None, llfn);
             }
             ast::TupleVariantKind(_) => {
                 // Nothing to do.
             }
-            ast::StructVariantKind(struct_def) => {
-                trans_struct_def(ccx, struct_def);
+            ast::StructVariantKind(ref struct_def) => {
+                trans_struct_def(ccx, &**struct_def);
             }
         }
     }
@@ -1569,16 +1569,16 @@ impl<'a> Visitor<()> for TransItemVisitor<'a> {
 pub fn trans_item(ccx: &CrateContext, item: &ast::Item) {
     let _icx = push_ctxt("trans_item");
     match item.node {
-      ast::ItemFn(decl, _fn_style, abi, ref generics, body) => {
+      ast::ItemFn(ref decl, _fn_style, abi, ref generics, ref body) => {
         if abi != Rust  {
             let llfndecl = get_item_val(ccx, item.id);
             foreign::trans_rust_fn_with_foreign_abi(
-                ccx, decl, body, item.attrs.as_slice(), llfndecl, item.id);
+                ccx, &**decl, &**body, item.attrs.as_slice(), llfndecl, item.id);
         } else if !generics.is_type_parameterized() {
             let llfn = get_item_val(ccx, item.id);
             trans_fn(ccx,
-                     decl,
-                     body,
+                     &**decl,
+                     &**body,
                      llfn,
                      None,
                      item.id,
@@ -1587,7 +1587,7 @@ pub fn trans_item(ccx: &CrateContext, item: &ast::Item) {
             // Be sure to travel more than just one layer deep to catch nested
             // items in blocks and such.
             let mut v = TransItemVisitor{ ccx: ccx };
-            v.visit_block(body, ());
+            v.visit_block(&**body, ());
         }
       }
       ast::ItemImpl(ref generics, _, _, ref ms) => {
@@ -1603,10 +1603,10 @@ pub fn trans_item(ccx: &CrateContext, item: &ast::Item) {
             trans_enum_def(ccx, enum_definition, item.id, vi.as_slice(), &mut i);
         }
       }
-      ast::ItemStatic(_, m, expr) => {
+      ast::ItemStatic(_, m, ref expr) => {
           // Recurse on the expression to catch items in blocks
           let mut v = TransItemVisitor{ ccx: ccx };
-          v.visit_expr(expr, ());
+          v.visit_expr(&**expr, ());
           consts::trans_const(ccx, m, item.id);
           // Do static_assert checking. It can't really be done much earlier
           // because we need to get the value of the bool out of LLVM
@@ -1628,9 +1628,9 @@ pub fn trans_item(ccx: &CrateContext, item: &ast::Item) {
       ast::ItemForeignMod(ref foreign_mod) => {
         foreign::trans_foreign_mod(ccx, foreign_mod);
       }
-      ast::ItemStruct(struct_def, ref generics) => {
+      ast::ItemStruct(ref struct_def, ref generics) => {
         if !generics.is_type_parameterized() {
-            trans_struct_def(ccx, struct_def);
+            trans_struct_def(ccx, &**struct_def);
         }
       }
       ast::ItemTrait(..) => {
@@ -1645,7 +1645,7 @@ pub fn trans_item(ccx: &CrateContext, item: &ast::Item) {
     }
 }
 
-pub fn trans_struct_def(ccx: &CrateContext, struct_def: @ast::StructDef) {
+pub fn trans_struct_def(ccx: &CrateContext, struct_def: &ast::StructDef) {
     // If this is a tuple-like struct, translate the constructor.
     match struct_def.ctor_id {
         // We only need to translate a constructor if there are fields;
@@ -1667,7 +1667,7 @@ pub fn trans_struct_def(ccx: &CrateContext, struct_def: @ast::StructDef) {
 pub fn trans_mod(ccx: &CrateContext, m: &ast::Mod) {
     let _icx = push_ctxt("trans_mod");
     for item in m.items.iter() {
-        trans_item(ccx, *item);
+        trans_item(ccx, &**item);
     }
 }
 
@@ -1839,7 +1839,7 @@ pub fn get_item_val(ccx: &CrateContext, id: ast::NodeId) -> ValueRef {
             let sym = exported_name(ccx, id, ty, i.attrs.as_slice());
 
             let v = match i.node {
-                ast::ItemStatic(_, _, expr) => {
+                ast::ItemStatic(_, _, ref expr) => {
                     // If this static came from an external crate, then
                     // we need to get the symbol from csearch instead of
                     // using the current crate's name/version
@@ -1858,7 +1858,7 @@ pub fn get_item_val(ccx: &CrateContext, id: ast::NodeId) -> ValueRef {
 
                     // We need the translated value here, because for enums the
                     // LLVM type is not fully determined by the Rust type.
-                    let (v, inlineable) = consts::const_expr(ccx, expr, is_local);
+                    let (v, inlineable) = consts::const_expr(ccx, &**expr, is_local);
                     ccx.const_values.borrow_mut().insert(id, v);
                     let mut inlineable = inlineable;
 
@@ -1946,20 +1946,7 @@ pub fn get_item_val(ccx: &CrateContext, id: ast::NodeId) -> ValueRef {
             v
         }
 
-        ast_map::NodeTraitMethod(trait_method) => {
-            debug!("get_item_val(): processing a NodeTraitMethod");
-            match *trait_method {
-                ast::Required(_) => {
-                    ccx.sess().bug("unexpected variant: required trait method in \
-                                   get_item_val()");
-                }
-                ast::Provided(m) => {
-                    register_method(ccx, id, m)
-                }
-            }
-        }
-
-        ast_map::NodeMethod(m) => {
+        ast_map::NodeProvidedTraitMethod(m) | ast_map::NodeMethod(m) => {
             register_method(ccx, id, m)
         }
 

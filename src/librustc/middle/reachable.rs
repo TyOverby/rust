@@ -187,12 +187,8 @@ impl<'a> ReachableContext<'a> {
                     _ => false,
                 }
             }
-            Some(ast_map::NodeTraitMethod(trait_method)) => {
-                match *trait_method {
-                    ast::Required(_) => false,
-                    ast::Provided(_) => true,
-                }
-            }
+            Some(ast_map::NodeRequiredTraitMethod(_)) => true,
+            Some(ast_map::NodeProvidedTraitMethod(_)) => true,
             Some(ast_map::NodeMethod(method)) => {
                 if generics_require_inlining(&method.generics) ||
                         attributes_specify_inlining(method.attrs.as_slice()) {
@@ -272,20 +268,20 @@ impl<'a> ReachableContext<'a> {
         match *node {
             ast_map::NodeItem(item) => {
                 match item.node {
-                    ast::ItemFn(_, _, _, _, search_block) => {
+                    ast::ItemFn(_, _, _, _, ref search_block) => {
                         if item_might_be_inlined(item) {
-                            visit::walk_block(self, search_block, ())
+                            visit::walk_block(self, &**search_block, ())
                         }
                     }
 
                     // Statics with insignificant addresses are not reachable
                     // because they're inlined specially into all other crates.
-                    ast::ItemStatic(_, _, init) => {
+                    ast::ItemStatic(_, _, ref init) => {
                         if attr::contains_name(item.attrs.as_slice(),
                                                "address_insignificant") {
                             self.reachable_symbols.remove(&search_item);
                         }
-                        visit::walk_expr(self, init, ());
+                        visit::walk_expr(self, &**init, ());
                     }
 
                     // These are normal, nothing reachable about these
@@ -303,23 +299,17 @@ impl<'a> ReachableContext<'a> {
                     }
                 }
             }
-            ast_map::NodeTraitMethod(trait_method) => {
-                match *trait_method {
-                    ast::Required(..) => {
-                        // Keep going, nothing to get exported
-                    }
-                    ast::Provided(ref method) => {
-                        visit::walk_block(self, method.body, ())
-                    }
-                }
+            ast_map::NodeProvidedTraitMethod(method) => {
+                visit::walk_block(self, &*method.body, ())
             }
             ast_map::NodeMethod(method) => {
                 let did = self.tcx.map.get_parent_did(search_item);
                 if method_might_be_inlined(self.tcx, method, did) {
-                    visit::walk_block(self, method.body, ())
+                    visit::walk_block(self, &*method.body, ())
                 }
             }
             // Nothing to recurse on for these
+            ast_map::NodeRequiredTraitMethod(_) |
             ast_map::NodeForeignItem(_) |
             ast_map::NodeVariant(_) |
             ast_map::NodeStructCtor(_) => {}

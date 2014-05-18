@@ -44,6 +44,7 @@ use syntax::print::pprust;
 use syntax::ast;
 use syntax::codemap;
 use syntax::crateid::CrateId;
+use syntax::ptr::P;
 
 pub type Cmd<'a> = &'a crate_metadata;
 
@@ -662,27 +663,28 @@ pub fn get_item_path(cdata: Cmd, id: ast::NodeId) -> Vec<ast_map::PathElem> {
     item_path(lookup_item(id, cdata.data()))
 }
 
-pub type DecodeInlinedItem<'a> = |cdata: Cmd,
-                                  tcx: &ty::ctxt,
-                                  path: Vec<ast_map::PathElem>,
-                                  par_doc: ebml::Doc|: 'a
-                                  -> Result<ast::InlinedItem, Vec<ast_map::PathElem> >;
+pub type DecodeInlinedItem<'a> = <'b> |cdata: Cmd,
+                                       tcx: &'b ty::ctxt,
+                                       path: Vec<ast_map::PathElem>,
+                                       par_doc: ebml::Doc|: 'a
+                                       -> Result<ast::InlinedItemRef<'b>,
+                                                 Vec<ast_map::PathElem>>;
 
-pub fn maybe_get_item_ast(cdata: Cmd, tcx: &ty::ctxt, id: ast::NodeId,
-                          decode_inlined_item: DecodeInlinedItem)
-                          -> csearch::found_ast {
+pub fn maybe_get_item_ast<'a>(cdata: Cmd, tcx: &'a ty::ctxt, id: ast::NodeId,
+                              decode_inlined_item: DecodeInlinedItem)
+                              -> csearch::found_ast<'a> {
     debug!("Looking up item: {}", id);
     let item_doc = lookup_item(id, cdata.data());
     let path = Vec::from_slice(item_path(item_doc).init());
     match decode_inlined_item(cdata, tcx, path, item_doc) {
-        Ok(ref ii) => csearch::found(*ii),
+        Ok(ii) => csearch::found(ii),
         Err(path) => {
             match item_parent_item(item_doc) {
                 Some(did) => {
                     let did = translate_def_id(cdata, did);
                     let parent_item = lookup_item(did.node, cdata.data());
                     match decode_inlined_item(cdata, tcx, path, parent_item) {
-                        Ok(ref ii) => csearch::found_parent(did, *ii),
+                        Ok(ii) => csearch::found_parent(did, ii),
                         Err(_) => csearch::not_found
                     }
                 }
@@ -952,7 +954,7 @@ pub fn get_tuple_struct_definition_if_ctor(cdata: Cmd,
 
 pub fn get_item_attrs(cdata: Cmd,
                       orig_node_id: ast::NodeId,
-                      f: |Vec<@ast::MetaItem> |) {
+                      f: |Vec<P<ast::MetaItem>>|) {
     // The attributes for a tuple struct are attached to the definition, not the ctor;
     // we assume that someone passing in a tuple struct ctor is actually wanting to
     // look at the definition
@@ -1014,8 +1016,8 @@ pub fn get_struct_fields(intr: Rc<IdentInterner>, cdata: Cmd, id: ast::NodeId)
     result
 }
 
-fn get_meta_items(md: ebml::Doc) -> Vec<@ast::MetaItem> {
-    let mut items: Vec<@ast::MetaItem> = Vec::new();
+fn get_meta_items(md: ebml::Doc) -> Vec<P<ast::MetaItem>> {
+    let mut items: Vec<P<ast::MetaItem>> = Vec::new();
     reader::tagged_docs(md, tag_meta_item_word, |meta_item_doc| {
         let nd = reader::get_doc(meta_item_doc, tag_meta_item_name);
         let n = token::intern_and_get_ident(nd.as_str_slice());
@@ -1051,7 +1053,7 @@ fn get_attributes(md: ebml::Doc) -> Vec<ast::Attribute> {
             // Currently it's only possible to have a single meta item on
             // an attribute
             assert_eq!(meta_items.len(), 1u);
-            let meta_item = *meta_items.get(0);
+            let meta_item = meta_items.move_iter().nth(0).unwrap();
             attrs.push(
                 codemap::Spanned {
                     node: ast::Attribute_ {

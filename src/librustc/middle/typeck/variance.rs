@@ -480,10 +480,10 @@ impl<'a> Visitor<()> for ConstraintContext<'a> {
                 // `ty::VariantInfo::from_ast_variant()` ourselves
                 // here, mainly so as to mask the differences between
                 // struct-like enums and so forth.
-                for &ast_variant in enum_definition.variants.iter() {
+                for ast_variant in enum_definition.variants.iter() {
                     let variant =
                         ty::VariantInfo::from_ast_variant(tcx,
-                                                          ast_variant,
+                                                          &**ast_variant,
                                                           /*discrimant*/ 0);
                     for &arg_ty in variant.args.iter() {
                         self.add_constraints_from_ty(arg_ty, self.covariant);
@@ -595,9 +595,10 @@ impl<'a> ConstraintContext<'a> {
                         _                    => cannot_happen!(),
                     }
                 }
-                ast_map::NodeTraitMethod(..) => is_inferred = false,
-                ast_map::NodeMethod(_)       => is_inferred = false,
-                _                            => cannot_happen!(),
+                ast_map::NodeProvidedTraitMethod(..) |
+                ast_map::NodeRequiredTraitMethod(..) |
+                ast_map::NodeMethod(_) => is_inferred = false,
+                _                      => cannot_happen!(),
             }
 
             return is_inferred;

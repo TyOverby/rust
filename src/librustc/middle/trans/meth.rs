@@ -37,6 +37,7 @@ use std::c_str::ToCStr;
 use syntax::abi::Rust;
 use syntax::parse::token;
 use syntax::{ast, ast_map, visit};
+use syntax::ptr::P;
 
 /**
 The main "translation" pass for methods.  Generates code
@@ -46,7 +47,7 @@ see `trans::base::lval_static_fn()` or `trans::base::monomorphic_fn()`.
 */
 pub fn trans_impl(ccx: &CrateContext,
                   name: ast::Ident,
-                  methods: &[@ast::Method],
+                  methods: &[P<ast::Method>],
                   generics: &ast::Generics,
                   id: ast::NodeId) {
     let _icx = push_ctxt("meth::trans_impl");
@@ -59,18 +60,18 @@ pub fn trans_impl(ccx: &CrateContext,
     if !generics.ty_params.is_empty() {
         let mut v = TransItemVisitor{ ccx: ccx };
         for method in methods.iter() {
-            visit::walk_method_helper(&mut v, *method, ());
+            visit::walk_method_helper(&mut v, &**method, ());
         }
         return;
     }
     for method in methods.iter() {
         if method.generics.ty_params.len() == 0u {
             let llfn = get_item_val(ccx, method.id);
-            trans_fn(ccx, method.decl, method.body,
+            trans_fn(ccx, &*method.decl, &*method.body,
                      llfn, None, method.id, []);
         } else {
             let mut v = TransItemVisitor{ ccx: ccx };
-            visit::walk_method_helper(&mut v, *method, ());
+            visit::walk_method_helper(&mut v, &**method, ());
         }
     }
 }
@@ -177,13 +178,8 @@ pub fn trans_static_method_callee(bcx: &Block,
 
     let mname = if method_id.krate == ast::LOCAL_CRATE {
         match bcx.tcx().map.get(method_id.node) {
-            ast_map::NodeTraitMethod(method) => {
-                let ident = match *method {
-                    ast::Required(ref m) => m.ident,
-                    ast::Provided(ref m) => m.ident
-                };
-                ident.name
-            }
+            ast_map::NodeRequiredTraitMethod(m) => m.ident.name,
+            ast_map::NodeProvidedTraitMethod(m) => m.ident.name,
             _ => fail!("callee is not a trait method")
         }
     } else {

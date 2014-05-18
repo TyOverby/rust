@@ -18,12 +18,13 @@ use metadata::decoder;
 use middle::ty;
 use middle::typeck;
 
-use reader = serialize::ebml::reader;
+use serialize::ebml::reader;
 use std::rc::Rc;
 use syntax::ast;
 use syntax::ast_map;
 use syntax::diagnostic::expect;
 use syntax::parse::token;
+use syntax::ptr::P;
 
 pub struct StaticMethodInfo {
     pub ident: ast::Ident,
@@ -90,18 +91,18 @@ pub fn get_item_path(tcx: &ty::ctxt, def: ast::DefId) -> Vec<ast_map::PathElem> 
         path.as_slice())
 }
 
-pub enum found_ast {
-    found(ast::InlinedItem),
-    found_parent(ast::DefId, ast::InlinedItem),
+pub enum found_ast<'a> {
+    found(ast::InlinedItemRef<'a>),
+    found_parent(ast::DefId, ast::InlinedItemRef<'a>),
     not_found,
 }
 
 // Finds the AST for this item in the crate metadata, if any.  If the item was
 // not marked for inlining, then the AST will not be present and hence none
 // will be returned.
-pub fn maybe_get_item_ast(tcx: &ty::ctxt, def: ast::DefId,
-                          decode_inlined_item: decoder::DecodeInlinedItem)
-                       -> found_ast {
+pub fn maybe_get_item_ast<'a>(tcx: &'a ty::ctxt, def: ast::DefId,
+                              decode_inlined_item: decoder::DecodeInlinedItem)
+                              -> found_ast<'a> {
     let cstore = &tcx.sess.cstore;
     let cdata = cstore.get_crate_data(def.krate);
     decoder::maybe_get_item_ast(&*cdata, tcx, def.node, decode_inlined_item)
@@ -175,7 +176,7 @@ pub fn get_static_methods_if_impl(cstore: &cstore::CStore,
 
 pub fn get_item_attrs(cstore: &cstore::CStore,
                       def_id: ast::DefId,
-                      f: |Vec<@ast::MetaItem> |) {
+                      f: |Vec<P<ast::MetaItem>>|) {
     let cdata = cstore.get_crate_data(def_id.krate);
     decoder::get_item_attrs(&*cdata, def_id.node, f)
 }

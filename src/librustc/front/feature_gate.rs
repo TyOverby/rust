@@ -199,7 +199,7 @@ impl<'a> Visitor<()> for Context<'a> {
                 }
             }
 
-            ast::ItemStruct(struct_definition, _) => {
+            ast::ItemStruct(ref struct_definition, _) => {
                 if attr::contains_name(i.attrs.as_slice(), "simd") {
                     self.gate_feature("simd", i.span,
                                       "SIMD types are experimental and possibly buggy");
@@ -280,7 +280,7 @@ impl<'a> Visitor<()> for Context<'a> {
 
     fn visit_ty(&mut self, t: &ast::Ty, _: ()) {
         match t.node {
-            ast::TyClosure(closure, _) if closure.onceness == ast::Once => {
+            ast::TyClosure(ref closure, _) if closure.onceness == ast::Once => {
                 self.gate_feature("once_fns", t.span,
                                   "once functions are \
                                    experimental and likely to be removed");
@@ -306,7 +306,7 @@ impl<'a> Visitor<()> for Context<'a> {
     fn visit_generics(&mut self, generics: &ast::Generics, _: ()) {
         for type_parameter in generics.ty_params.iter() {
             match type_parameter.default {
-                Some(ty) => {
+                Some(ref ty) => {
                     self.gate_feature("default_type_params", ty.span,
                                       "default type parameters are \
                                        experimental and possibly buggy");
@@ -335,7 +335,7 @@ pub fn check_crate(sess: &Session, krate: &ast::Crate) {
                                           expected #![feature(...)]");
             }
             Some(list) => {
-                for &mi in list.iter() {
+                for mi in list.iter() {
                     let name = match mi.node {
                         ast::MetaWord(ref word) => (*word).clone(),
                         _ => {

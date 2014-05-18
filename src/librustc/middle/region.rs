@@ -30,9 +30,10 @@ use std::cell::RefCell;
 use collections::{HashMap, HashSet};
 use syntax::codemap::Span;
 use syntax::{ast, visit};
-use syntax::visit::{Visitor, FnKind};
 use syntax::ast::{Block, Item, FnDecl, NodeId, Arm, Pat, Stmt, Expr, Local};
 use syntax::ast_util::{stmt_id};
+use syntax::ptr::P;
+use syntax::visit::{Visitor, FnKind};
 
 /**
 The region maps encode information about region relationships.
@@ -434,7 +435,7 @@ fn resolve_arm(visitor: &mut RegionResolutionVisitor,
     visitor.region_maps.mark_as_terminating_scope(arm.body.id);
 
     match arm.guard {
-        Some(expr) => {
+        Some(ref expr) => {
             visitor.region_maps.mark_as_terminating_scope(expr.id);
         }
         None => { }
@@ -487,28 +488,28 @@ fn resolve_expr(visitor: &mut RegionResolutionVisitor,
         // scopes, meaning that temporaries cannot outlive them.
         // This ensures fixed size stacks.
 
-        ast::ExprBinary(ast::BiAnd, _, r) |
-        ast::ExprBinary(ast::BiOr, _, r) => {
+        ast::ExprBinary(ast::BiAnd, _, ref r) |
+        ast::ExprBinary(ast::BiOr, _, ref r) => {
             // For shortcircuiting operators, mark the RHS as a terminating
             // scope since it only executes conditionally.
             visitor.region_maps.mark_as_terminating_scope(r.id);
         }
 
-        ast::ExprIf(_, then, Some(otherwise)) => {
+        ast::ExprIf(_, ref then, Some(ref otherwise)) => {
             visitor.region_maps.mark_as_terminating_scope(then.id);
             visitor.region_maps.mark_as_terminating_scope(otherwise.id);
         }
 
-        ast::ExprIf(expr, then, None) => {
+        ast::ExprIf(ref expr, ref then, None) => {
             visitor.region_maps.mark_as_terminating_scope(expr.id);
             visitor.region_maps.mark_as_terminating_scope(then.id);
         }
 
-        ast::ExprLoop(body, _) => {
+        ast::ExprLoop(ref body, _) => {
             visitor.region_maps.mark_as_terminating_scope(body.id);
         }
 
-        ast::ExprWhile(expr, body) => {
+        ast::ExprWhile(ref expr, ref body) => {
             visitor.region_maps.mark_as_terminating_scope(expr.id);
             visitor.region_maps.mark_as_terminating_scope(body.id);
         }
@@ -628,11 +629,11 @@ fn resolve_local(visitor: &mut RegionResolutionVisitor,
     // FIXME(#6308) -- Note that `[]` patterns work more smoothly post-DST.
 
     match local.init {
-        Some(expr) => {
-            record_rvalue_scope_if_borrow_expr(visitor, expr, blk_id);
+        Some(ref expr) => {
+            record_rvalue_scope_if_borrow_expr(visitor, &**expr, blk_id);
 
-            if is_binding_pat(local.pat) || is_borrowed_ty(local.ty) {
-                record_rvalue_scope(visitor, expr, blk_id);
+            if is_binding_pat(&*local.pat) || is_borrowed_ty(&*local.ty) {
+                record_rvalue_scope(visitor, &**expr, blk_id);
             }
         }
 
@@ -657,22 +658,22 @@ fn resolve_local(visitor: &mut RegionResolutionVisitor,
             ast::PatIdent(ast::BindByRef(_), _, _) => true,
 
             ast::PatStruct(_, ref field_pats, _) => {
-                field_pats.iter().any(|fp| is_binding_pat(fp.pat))
+                field_pats.iter().any(|fp| is_binding_pat(&*fp.pat))
             }
 
             ast::PatVec(ref pats1, ref pats2, ref pats3) => {
-                pats1.iter().any(|&p| is_binding_pat(p)) ||
-                pats2.iter().any(|&p| is_binding_pat(p)) ||
-                pats3.iter().any(|&p| is_binding_pat(p))
+                pats1.iter().any(|p| is_binding_pat(&**p)) ||
+                pats2.iter().any(|p| is_binding_pat(&**p)) ||
+                pats3.iter().any(|p| is_binding_pat(&**p))
             }
 
             ast::PatEnum(_, Some(ref subpats)) |
             ast::PatTup(ref subpats) => {
-                subpats.iter().any(|&p| is_binding_pat(p))
+                subpats.iter().any(|p| is_binding_pat(&**p))
             }
 
-            ast::PatUniq(subpat) => {
-                is_binding_pat(subpat)
+            ast::PatUniq(ref subpat) => {
+                is_binding_pat(&**subpat)
             }
 
             _ => false,
@@ -709,39 +710,39 @@ fn resolve_local(visitor: &mut RegionResolutionVisitor,
          */
 
         match expr.node {
-            ast::ExprAddrOf(_, subexpr) => {
-                record_rvalue_scope_if_borrow_expr(visitor, subexpr, blk_id);
-                record_rvalue_scope(visitor, subexpr, blk_id);
+            ast::ExprAddrOf(_, ref subexpr) => {
+                record_rvalue_scope_if_borrow_expr(visitor, &**subexpr, blk_id);
+                record_rvalue_scope(visitor, &**subexpr, blk_id);
             }
             ast::ExprStruct(_, ref fields, _) => {
                 for field in fields.iter() {
                     record_rvalue_scope_if_borrow_expr(
-                        visitor, field.expr, blk_id);
+                        visitor, &*field.expr, blk_id);
                 }
             }
-            ast::ExprVstore(subexpr, _) => {
+            ast::ExprVstore(ref subexpr, _) => {
                 visitor.region_maps.record_rvalue_scope(subexpr.id, blk_id);
-                record_rvalue_scope_if_borrow_expr(visitor, subexpr, blk_id);
+                record_rvalue_scope_if_borrow_expr(visitor, &**subexpr, blk_id);
             }
             ast::ExprVec(ref subexprs) |
             ast::ExprTup(ref subexprs) => {
-                for &subexpr in subexprs.iter() {
+                for subexpr in subexprs.iter() {
                     record_rvalue_scope_if_borrow_expr(
-                        visitor, subexpr, blk_id);
+                        visitor, &**subexpr, blk_id);
                 }
             }
-            ast::ExprUnary(ast::UnUniq, subexpr) => {
-                record_rvalue_scope_if_borrow_expr(visitor, subexpr, blk_id);
+            ast::ExprUnary(ast::UnUniq, ref subexpr) => {
+                record_rvalue_scope_if_borrow_expr(visitor, &**subexpr, blk_id);
             }
-            ast::ExprCast(subexpr, _) |
-            ast::ExprParen(subexpr) => {
-                record_rvalue_scope_if_borrow_expr(visitor, subexpr, blk_id)
+            ast::ExprCast(ref subexpr, _) |
+            ast::ExprParen(ref subexpr) => {
+                record_rvalue_scope_if_borrow_expr(visitor, &**subexpr, blk_id)
             }
             ast::ExprBlock(ref block) => {
                 match block.expr {
-                    Some(subexpr) => {
+                    Some(ref subexpr) => {
                         record_rvalue_scope_if_borrow_expr(
-                            visitor, subexpr, blk_id);
+                            visitor, &**subexpr, blk_id);
                     }
                     None => { }
                 }
@@ -789,7 +790,7 @@ fn resolve_local(visitor: &mut RegionResolutionVisitor,
                 ast::ExprField(ref subexpr, _, _) |
                 ast::ExprIndex(ref subexpr, _) |
                 ast::ExprParen(ref subexpr) => {
-                    let subexpr: &'a @Expr = subexpr; // FIXME(#11586)
+                    let subexpr: &'a P<Expr> = subexpr; // FIXME(#11586)
                     expr = &**subexpr;
                 }
                 _ => {
@@ -903,13 +904,17 @@ pub fn resolve_crate(sess: &Session, krate: &ast::Crate) -> RegionMaps {
 
 pub fn resolve_inlined_item(sess: &Session,
                             region_maps: &RegionMaps,
-                            item: &ast::InlinedItem) {
+                            item: ast::InlinedItemRef) {
     let cx = Context {parent: None,
                       var_parent: None};
     let mut visitor = RegionResolutionVisitor {
         sess: sess,
         region_maps: region_maps,
     };
-    visit::walk_inlined_item(&mut visitor, item, cx);
+    match item {
+        ast::IIItemRef(i) => visitor.visit_item(i, cx),
+        ast::IIForeignRef(i) => visitor.visit_foreign_item(i, cx),
+        ast::IIMethodRef(_, _, m) => visit::walk_method_helper(&mut visitor, m, cx)
+    }
 }
 

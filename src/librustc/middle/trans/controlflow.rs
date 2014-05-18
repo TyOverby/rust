@@ -49,18 +49,18 @@ pub fn trans_stmt<'a>(cx: &'a Block<'a>,
     fcx.push_ast_cleanup_scope(id);
 
     match s.node {
-        ast::StmtExpr(e, _) | ast::StmtSemi(e, _) => {
-            bcx = trans_stmt_semi(bcx, e);
+        ast::StmtExpr(ref e, _) | ast::StmtSemi(ref e, _) => {
+            bcx = trans_stmt_semi(bcx, &**e);
         }
-        ast::StmtDecl(d, _) => {
+        ast::StmtDecl(ref d, _) => {
             match d.node {
                 ast::DeclLocal(ref local) => {
-                    bcx = init_local(bcx, *local);
+                    bcx = init_local(bcx, &**local);
                     if cx.sess().opts.debuginfo == FullDebugInfo {
-                        debuginfo::create_local_var_metadata(bcx, *local);
+                        debuginfo::create_local_var_metadata(bcx, &**local);
                     }
                 }
-                ast::DeclItem(i) => trans_item(cx.fcx.ccx, i)
+                ast::DeclItem(ref i) => trans_item(cx.fcx.ccx, &**i)
             }
         }
         ast::StmtMac(..) => cx.tcx().sess.bug("unexpanded macro")
@@ -93,7 +93,7 @@ pub fn trans_block<'a>(bcx: &'a Block<'a>,
     fcx.push_ast_cleanup_scope(b.id);
 
     for s in b.stmts.iter() {
-        bcx = trans_stmt(bcx, *s);
+        bcx = trans_stmt(bcx, &**s);
     }
 
     if dest != expr::Ignore {
@@ -104,8 +104,8 @@ pub fn trans_block<'a>(bcx: &'a Block<'a>,
     }
 
     match b.expr {
-        Some(e) => {
-            bcx = expr::trans_into(bcx, e, dest);
+        Some(ref e) => {
+            bcx = expr::trans_into(bcx, &**e, dest);
         }
         None => {
             assert!(dest == expr::Ignore || bcx.unreachable.get());
@@ -120,8 +120,8 @@ pub fn trans_block<'a>(bcx: &'a Block<'a>,
 pub fn trans_if<'a>(bcx: &'a Block<'a>,
                     if_id: ast::NodeId,
                     cond: &ast::Expr,
-                    thn: ast::P<ast::Block>,
-                    els: Option<@ast::Expr>,
+                    thn: &ast::Block,
+                    els: Option<&ast::Expr>,
                     dest: expr::Dest)
                     -> &'a Block<'a> {
     debug!("trans_if(bcx={}, if_id={}, cond={}, thn={:?}, dest={})",
@@ -315,7 +315,7 @@ pub fn trans_cont<'a>(bcx: &'a Block<'a>,
 }
 
 pub fn trans_ret<'a>(bcx: &'a Block<'a>,
-                     e: Option<@ast::Expr>)
+                     e: Option<&ast::Expr>)
                      -> &'a Block<'a> {
     let _icx = push_ctxt("trans_ret");
     let fcx = bcx.fcx;

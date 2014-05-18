@@ -22,6 +22,7 @@ use std::cell::RefCell;
 use std::slice;
 use std::vec::Vec;
 use std::vec;
+use syntax::{ast, ast_util};
 use syntax::ast_util::*;
 use syntax::attr::AttrMetaMethods;
 use syntax::attr;
@@ -35,7 +36,7 @@ use syntax::owned_slice::OwnedSlice;
 use syntax::parse::token::InternedString;
 use syntax::parse::token;
 use syntax::print::pprust;
-use syntax::{ast, ast_util};
+use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
 
 struct Test {
@@ -87,12 +88,12 @@ impl<'a> fold::Folder for TestHarnessGenerator<'a> {
         }
     }
 
-    fn fold_item(&mut self, i: @ast::Item) -> SmallVector<@ast::Item> {
+    fn fold_item(&mut self, i: P<ast::Item>) -> SmallVector<P<ast::Item>> {
         self.cx.path.borrow_mut().push(i.ident);
         debug!("current path: {}",
                ast_util::path_name_i(self.cx.path.borrow().as_slice()));
 
-        if is_test_fn(&self.cx, i) || is_bench_fn(&self.cx, i) {
+        if is_test_fn(&self.cx, &*i) || is_bench_fn(&self.cx, &*i) {
             match i.node {
                 ast::ItemFn(_, ast::UnsafeFn, _, _, _) => {
                     let sess = self.cx.sess;
@@ -105,9 +106,9 @@ impl<'a> fold::Folder for TestHarnessGenerator<'a> {
                     let test = Test {
                         span: i.span,
                         path: self.cx.path.borrow().clone(),
-                        bench: is_bench_fn(&self.cx, i),
-                        ignore: is_ignored(&self.cx, i),
-                        should_fail: should_fail(i)
+                        bench: is_bench_fn(&self.cx, &*i),
+                        ignore: is_ignored(&self.cx, &*i),
+                        should_fail: should_fail(&*i)
                     };
                     self.cx.testfns.borrow_mut().push(test);
                     // debug!("have {} test/bench functions",
@@ -121,30 +122,36 @@ impl<'a> fold::Folder for TestHarnessGenerator<'a> {
         res
     }
 
-    fn fold_mod(&mut self, m: &ast::Mod) -> ast::Mod {
+    fn fold_mod(&mut self, ast::Mod {inner, view_items, items}: ast::Mod) -> ast::Mod {
         // Remove any #[main] from the AST so it doesn't clash with
         // the one we're going to add. Only if compiling an executable.
 
-        fn nomain(item: @ast::Item) -> @ast::Item {
-            @ast::Item {
-                attrs: item.attrs.iter().filter_map(|attr| {
-                    if !attr.name().equiv(&("main")) {
-                        Some(*attr)
-                    } else {
-                        None
-                    }
-                }).collect(),
-                .. (*item).clone()
-            }
+        fn nomain(item: P<ast::Item>) -> P<ast::Item> {
+            item.map(|ast::Item {id, ident, attrs, node, vis, span}| {
+                ast::Item {
+                    id: id,
+                    ident: ident,
+                    attrs: attrs.move_iter().filter_map(|attr| {
+                        if !attr.name().equiv(&("main")) {
+                            Some(attr)
+                        } else {
+                            None
+                        }
+                    }).collect(),
+                    node: node,
+                    vis: vis,
+                    span: span
+                }
+            })
         }
 
         let mod_nomain = ast::Mod {
-            inner: m.inner,
-            view_items: m.view_items.clone(),
-            items: m.items.iter().map(|i| nomain(*i)).collect(),
+            inner: inner,
+            view_items: view_items,
+            items: items.move_iter().map(nomain).collect(),
         };
 
-        fold::noop_fold_mod(&mod_nomain, self)
+        fold::noop_fold_mod(mod_nomain, self)
     }
 }
 
@@ -191,10 +198,10 @@ fn strip_test_functions(krate: ast::Crate) -> ast::Crate {
     })
 }
 
-fn is_test_fn(cx: &TestCtxt, i: @ast::Item) -> bool {
+fn is_test_fn(cx: &TestCtxt, i: &ast::Item) -> bool {
     let has_test_attr = attr::contains_name(i.attrs.as_slice(), "test");
 
-    fn has_test_signature(i: @ast::Item) -> bool {
+    fn has_test_signature(i: &ast::Item) -> bool {
         match &i.node {
           &ast::ItemFn(ref decl, _, _, ref generics, _) => {
             let no_output = match decl.output.node {
@@ -220,10 +227,10 @@ fn is_test_fn(cx: &TestCtxt, i: @ast::Item) -> bool {
     return has_test_attr && has_test_signature(i);
 }
 
-fn is_bench_fn(cx: &TestCtxt, i: @ast::Item) -> bool {
+fn is_bench_fn(cx: &TestCtxt, i: &ast::Item) -> bool {
     let has_bench_attr = attr::contains_name(i.attrs.as_slice(), "bench");
 
-    fn has_test_signature(i: @ast::Item) -> bool {
+    fn has_test_signature(i: &ast::Item) -> bool {
         match i.node {
             ast::ItemFn(ref decl, _, _, ref generics, _) => {
                 let input_cnt = decl.inputs.len();
@@ -250,19 +257,19 @@ fn is_bench_fn(cx: &TestCtxt, i: @ast::Item) -> bool {
     return has_bench_attr && has_test_signature(i);
 }
 
-fn is_ignored(cx: &TestCtxt, i: @ast::Item) -> bool {
+fn is_ignored(cx: &TestCtxt, i: &ast::Item) -> bool {
     i.attrs.iter().any(|attr| {
         // check ignore(cfg(foo, bar))
         attr.name().equiv(&("ignore")) && match attr.meta_item_list() {
             Some(ref cfgs) => {
-                attr::test_cfg(cx.config.as_slice(), cfgs.iter().map(|x| *x))
+                attr::test_cfg(cx.config.as_slice(), cfgs.iter())
             }
             None => true
         }
     })
 }
 
-fn should_fail(i: @ast::Item) -> bool {
+fn should_fail(i: &ast::Item) -> bool {
     attr::contains_name(i.attrs.as_slice(), "should_fail")
 }
 
@@ -296,9 +303,9 @@ fn mk_std(cx: &TestCtxt) -> ast::ViewItem {
     let id_test = token::str_to_ident("test");
     let (vi, vis) = if cx.is_test_crate {
         (ast::ViewItemUse(
-            @nospan(ast::ViewPathSimple(id_test,
-                                        path_node(vec!(id_test)),
-                                        ast::DUMMY_NODE_ID))),
+            P(nospan(ast::ViewPathSimple(id_test,
+                                         path_node(vec!(id_test)),
+                                         ast::DUMMY_NODE_ID)))),
          ast::Public)
     } else {
         (ast::ViewItemExternCrate(id_test,
@@ -314,7 +321,7 @@ fn mk_std(cx: &TestCtxt) -> ast::ViewItem {
     }
 }
 
-fn mk_test_module(cx: &TestCtxt) -> @ast::Item {
+fn mk_test_module(cx: &TestCtxt) -> P<ast::Item> {
     // Link to test crate
     let view_items = vec!(mk_std(cx));
 
@@ -354,7 +361,7 @@ fn mk_test_module(cx: &TestCtxt) -> @ast::Item {
 
     debug!("Synthetic test module:\n{}\n", pprust::item_to_str(&item));
 
-    return @item;
+    P(item)
 }
 
 fn nospan<T>(t: T) -> codemap::Spanned<T> {
@@ -385,7 +392,7 @@ fn path_node_global(ids: Vec<ast::Ident> ) -> ast::Path {
     }
 }
 
-fn mk_tests(cx: &TestCtxt) -> @ast::Item {
+fn mk_tests(cx: &TestCtxt) -> P<ast::Item> {
     // The vector of test_descs for this crate
     let test_descs = mk_test_descs(cx);
 
@@ -403,23 +410,23 @@ fn is_test_crate(krate: &ast::Crate) -> bool {
     }
 }
 
-fn mk_test_descs(cx: &TestCtxt) -> @ast::Expr {
+fn mk_test_descs(cx: &TestCtxt) -> P<ast::Expr> {
     debug!("building test vector from {} tests", cx.testfns.borrow().len());
 
-    @ast::Expr {
+    P(ast::Expr {
         id: ast::DUMMY_NODE_ID,
-        node: ast::ExprVstore(@ast::Expr {
+        node: ast::ExprVstore(P(ast::Expr {
             id: ast::DUMMY_NODE_ID,
             node: ast::ExprVec(cx.testfns.borrow().iter().map(|test| {
                 mk_test_desc_and_fn_rec(cx, test)
             }).collect()),
             span: DUMMY_SP,
-        }, ast::ExprVstoreSlice),
+        }), ast::ExprVstoreSlice),
         span: DUMMY_SP,
-    }
+    })
 }
 
-fn mk_test_desc_and_fn_rec(cx: &TestCtxt, test: &Test) -> @ast::Expr {
+fn mk_test_desc_and_fn_rec(cx: &TestCtxt, test: &Test) -> P<ast::Expr> {
     let span = test.span;
     let path = test.path.clone();
 
@@ -430,19 +437,19 @@ fn mk_test_desc_and_fn_rec(cx: &TestCtxt, test: &Test) -> @ast::Expr {
                     ast_util::path_name_i(path.as_slice()).as_slice()),
                     ast::CookedStr));
 
-    let name_expr = @ast::Expr {
-          id: ast::DUMMY_NODE_ID,
-          node: ast::ExprLit(@name_lit),
-          span: span
-    };
+    let name_expr = P(ast::Expr {
+        id: ast::DUMMY_NODE_ID,
+        node: ast::ExprLit(P(name_lit)),
+        span: span
+    });
 
     let fn_path = path_node_global(path);
 
-    let fn_expr = @ast::Expr {
+    let fn_expr = P(ast::Expr {
         id: ast::DUMMY_NODE_ID,
         node: ast::ExprPath(fn_path),
         span: span,
-    };
+    });
 
     let t_expr = if test.bench {
         quote_expr!(&cx.ext_cx, self::test::StaticBenchFn($fn_expr) )

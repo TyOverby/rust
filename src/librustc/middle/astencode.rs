@@ -31,6 +31,7 @@ use syntax::{ast, ast_map, ast_util, codemap, fold};
 use syntax::codemap::Span;
 use syntax::fold::Folder;
 use syntax::parse::token;
+use syntax::ptr::P;
 use syntax;
 
 use libc;
@@ -50,13 +51,13 @@ use writer = serialize::ebml::writer;
 #[cfg(test)] use syntax::parse;
 #[cfg(test)] use syntax::print::pprust;
 
-struct DecodeContext<'a> {
+struct DecodeContext<'a, 'b> {
     cdata: &'a cstore::crate_metadata,
-    tcx: &'a ty::ctxt,
+    tcx: &'b ty::ctxt,
 }
 
-struct ExtendedDecodeContext<'a> {
-    dcx: &'a DecodeContext<'a>,
+struct ExtendedDecodeContext<'a, 'b> {
+    dcx: &'a DecodeContext<'a, 'b>,
     from_id_range: ast_util::IdRange,
     to_id_range: ast_util::IdRange
 }
@@ -76,11 +77,11 @@ pub type Encoder<'a> = writer::Encoder<'a, MemWriter>;
 
 pub fn encode_inlined_item(ecx: &e::EncodeContext,
                            ebml_w: &mut Encoder,
-                           ii: e::InlinedItemRef) {
+                           ii: ast::InlinedItemRef) {
     let id = match ii {
-        e::IIItemRef(i) => i.id,
-        e::IIForeignRef(i) => i.id,
-        e::IIMethodRef(_, _, m) => m.id,
+        ast::IIItemRef(i) => i.id,
+        ast::IIForeignRef(i) => i.id,
+        ast::IIMethodRef(_, _, m) => m.id,
     };
     debug!("> Encoding inlined item: {} ({})",
            ecx.tcx.map.path_to_str(id),
@@ -91,8 +92,8 @@ pub fn encode_inlined_item(ecx: &e::EncodeContext,
 
     ebml_w.start_tag(c::tag_ast as uint);
     id_range.encode(ebml_w);
-    encode_ast(ebml_w, ii);
     encode_side_tables_for_ii(ecx, ebml_w, &ii);
+    encode_ast(ebml_w, ii);
     ebml_w.end_tag();
 
     debug!("< Encoded inlined fn: {} ({})",
@@ -100,11 +101,11 @@ pub fn encode_inlined_item(ecx: &e::EncodeContext,
            ebml_w.writer.tell());
 }
 
-pub fn decode_inlined_item(cdata: &cstore::crate_metadata,
-                           tcx: &ty::ctxt,
-                           path: Vec<ast_map::PathElem>,
-                           par_doc: ebml::Doc)
-                           -> Result<ast::InlinedItem, Vec<ast_map::PathElem>> {
+pub fn decode_inlined_item<'a>(cdata: &cstore::crate_metadata,
+                               tcx: &'a ty::ctxt,
+                               path: Vec<ast_map::PathElem>,
+                               par_doc: ebml::Doc)
+                               -> Result<ast::InlinedItemRef<'a>, Vec<ast_map::PathElem>> {
     let dcx = &DecodeContext {
         cdata: cdata,
         tcx: tcx,
@@ -129,26 +130,26 @@ pub fn decode_inlined_item(cdata: &cstore::crate_metadata,
             to_id_range: to_id_range
         };
         let raw_ii = decode_ast(ast_doc);
-        let ii = renumber_and_map_ast(xcx, &dcx.tcx.map, path, raw_ii);
-        let ident = match ii {
-            ast::IIItem(i) => i.ident,
-            ast::IIForeign(i) => i.ident,
-            ast::IIMethod(_, _, m) => m.ident,
+        let ii_ref = renumber_and_map_ast(xcx, path, raw_ii);
+        let ident = match ii_ref {
+            ast::IIItemRef(i) => i.ident,
+            ast::IIForeignRef(i) => i.ident,
+            ast::IIMethodRef(_, _, m) => m.ident,
         };
         debug!("Fn named: {}", token::get_ident(ident));
         debug!("< Decoded inlined fn: {}::{}",
                path_as_str.unwrap(),
                token::get_ident(ident));
-        region::resolve_inlined_item(&tcx.sess, &tcx.region_maps, &ii);
+        region::resolve_inlined_item(&tcx.sess, &tcx.region_maps, ii_ref);
         decode_side_tables(xcx, ast_doc);
-        match ii {
-          ast::IIItem(i) => {
+        match ii_ref {
+          ast::IIItemRef(i) => {
             debug!(">>> DECODED ITEM >>>\n{}\n<<< DECODED ITEM <<<",
                    syntax::print::pprust::item_to_str(i));
           }
           _ => { }
         }
-        Ok(ii)
+        Ok(ii_ref)
       }
     }
 }
@@ -166,7 +167,7 @@ fn reserve_id_range(sess: &Session,
     ast_util::IdRange { min: to_id_min, max: to_id_max }
 }
 
-impl<'a> ExtendedDecodeContext<'a> {
+impl<'a, 'b> ExtendedDecodeContext<'a, 'b> {
     pub fn tr_id(&self, id: ast::NodeId) -> ast::NodeId {
         /*!
          * Translates an internal id, meaning a node id that is known
@@ -299,29 +300,36 @@ fn encode_ast(ebml_w: &mut Encoder, item: ast::InlinedItem) {
 struct NestedItemsDropper;
 
 impl Folder for NestedItemsDropper {
-    fn fold_block(&mut self, blk: ast::P<ast::Block>) -> ast::P<ast::Block> {
-        let stmts_sans_items = blk.stmts.iter().filter_map(|stmt| {
-            match stmt.node {
-                ast::StmtExpr(_, _) | ast::StmtSemi(_, _) => Some(*stmt),
-                ast::StmtDecl(decl, _) => {
-                    match decl.node {
-                        ast::DeclLocal(_) => Some(*stmt),
-                        ast::DeclItem(_) => None,
+    fn fold_block(&mut self, blk: P<ast::Block>) -> P<ast::Block> {
+        blk.and_then(|ast::Block {id, stmts, expr, rules, span, ..}| {
+            let stmts_sans_items = stmts.move_iter().filter_map(|stmt| {
+                let use_stmt = match stmt.node {
+                    ast::StmtExpr(_, _) | ast::StmtSemi(_, _) => true,
+                    ast::StmtDecl(ref decl, _) => {
+                        match decl.node {
+                            ast::DeclLocal(_) => true,
+                            ast::DeclItem(_) => false,
+                        }
                     }
+                    ast::StmtMac(..) => fail!("unexpanded macro in astencode")
+                };
+                if use_stmt {
+                    Some(stmt)
+                } else {
+                    None
                 }
-                ast::StmtMac(..) => fail!("unexpanded macro in astencode")
-            }
-        }).collect();
-        let blk_sans_items = ast::P(ast::Block {
-            view_items: Vec::new(), // I don't know if we need the view_items
-                                    // here, but it doesn't break tests!
-            stmts: stmts_sans_items,
-            expr: blk.expr,
-            id: blk.id,
-            rules: blk.rules,
-            span: blk.span,
-        });
-        fold::noop_fold_block(blk_sans_items, self)
+            }).collect();
+            let blk_sans_items = P(ast::Block {
+                view_items: Vec::new(), // I don't know if we need the view_items
+                                        // here, but it doesn't break tests!
+                stmts: stmts_sans_items,
+                expr: expr,
+                id: id,
+                rules: rules,
+                span: span,
+            });
+            fold::noop_fold_block(blk_sans_items, self)
+        })
     }
 }
 
@@ -335,15 +343,19 @@ impl Folder for NestedItemsDropper {
 // As it happens, trans relies on the fact that we do not export
 // nested items, as otherwise it would get confused when translating
 // inlined items.
-fn simplify_ast(ii: e::InlinedItemRef) -> ast::InlinedItem {
+fn simplify_ast(ii: ast::InlinedItemRef) -> ast::InlinedItem {
     let mut fld = NestedItemsDropper;
 
     match ii {
         // HACK we're not dropping items.
-        e::IIItemRef(i) => ast::IIItem(fold::noop_fold_item(i, &mut fld)
-                                       .expect_one("expected one item")),
-        e::IIMethodRef(d, p, m) => ast::IIMethod(d, p, fold::noop_fold_method(m, &mut fld)),
-        e::IIForeignRef(i) => ast::IIForeign(fold::noop_fold_foreign_item(i, &mut fld))
+        ast::IIItemRef(i) => ast::IIItem(fold::noop_fold_item(P(i.clone()), &mut fld)
+                                            .expect_one("expected one item")),
+        ast::IIMethodRef(d, p, m) => {
+            ast::IIMethod(d, p, fold::noop_fold_method(P(m.clone()), &mut fld))
+        }
+        ast::IIForeignRef(i) => {
+            ast::IIForeign(fold::noop_fold_foreign_item(P(i.clone()), &mut fld))
+        }
     }
 }
 
@@ -353,11 +365,11 @@ fn decode_ast(par_doc: ebml::Doc) -> ast::InlinedItem {
     Decodable::decode(&mut d).unwrap()
 }
 
-struct AstRenumberer<'a> {
-    xcx: &'a ExtendedDecodeContext<'a>,
+struct AstRenumberer<'a, 'b> {
+    xcx: &'a ExtendedDecodeContext<'a, 'b>,
 }
 
-impl<'a> ast_map::FoldOps for AstRenumberer<'a> {
+impl<'a, 'b> ast_map::FoldOps for AstRenumberer<'a, 'b> {
     fn new_id(&self, id: ast::NodeId) -> ast::NodeId {
         if id == ast::DUMMY_NODE_ID {
             // Used by ast_map to map the NodeInlinedParent.
@@ -371,15 +383,16 @@ impl<'a> ast_map::FoldOps for AstRenumberer<'a> {
     }
 }
 
-fn renumber_and_map_ast(xcx: &ExtendedDecodeContext,
-                        map: &ast_map::Map,
-                        path: Vec<ast_map::PathElem> ,
-                        ii: ast::InlinedItem) -> ast::InlinedItem {
-    ast_map::map_decoded_item(map,
+fn renumber_and_map_ast<'a, 'b>(xcx: &ExtendedDecodeContext<'a, 'b>,
+                                path: Vec<ast_map::PathElem>,
+                                ii: ast::InlinedItem) -> ast::InlinedItemRef<'b> {
+    // HACK(eddyb) option dance.
+    let mut ii = Some(ii);
+    ast_map::map_decoded_item(&xcx.dcx.tcx.map,
                               path.move_iter().collect(),
                               AstRenumberer { xcx: xcx },
                               |fld| {
-        match ii {
+        match ii.take_unwrap() {
             ast::IIItem(i) => {
                 ast::IIItem(fld.fold_item(i).expect_one("expected one item"))
             }
@@ -1299,7 +1312,6 @@ impl<'a> ebml_decoder_decoder_helpers for reader::Decoder<'a> {
 
 fn decode_side_tables(xcx: &ExtendedDecodeContext,
                       ast_doc: ebml::Doc) {
-    let dcx = xcx.dcx;
     let tbl_doc = ast_doc.get(c::tag_table as uint);
     reader::docs(tbl_doc, |tag, entry_doc| {
         let id0 = entry_doc.get(c::tag_table_id as uint).as_int();
@@ -1322,35 +1334,35 @@ fn decode_side_tables(xcx: &ExtendedDecodeContext,
                 match value {
                     c::tag_table_def => {
                         let def = decode_def(xcx, val_doc);
-                        dcx.tcx.def_map.borrow_mut().insert(id, def);
+                        xcx.dcx.tcx.def_map.borrow_mut().insert(id, def);
                     }
                     c::tag_table_node_type => {
                         let ty = val_dsr.read_ty(xcx);
                         debug!("inserting ty for node {:?}: {}",
-                               id, ty_to_str(dcx.tcx, ty));
-                        dcx.tcx.node_types.borrow_mut().insert(id as uint, ty);
+                               id, ty_to_str(xcx.dcx.tcx, ty));
+                        xcx.dcx.tcx.node_types.borrow_mut().insert(id as uint, ty);
                     }
                     c::tag_table_item_subst => {
                         let item_substs = ty::ItemSubsts {
                             substs: val_dsr.read_substs(xcx)
                         };
-                        dcx.tcx.item_substs.borrow_mut().insert(
+                        xcx.dcx.tcx.item_substs.borrow_mut().insert(
                             id, item_substs);
                     }
                     c::tag_table_freevars => {
                         let fv_info = val_dsr.read_to_vec(|val_dsr| {
                             Ok(val_dsr.read_freevar_entry(xcx))
                         }).unwrap().move_iter().collect();
-                        dcx.tcx.freevars.borrow_mut().insert(id, fv_info);
+                        xcx.dcx.tcx.freevars.borrow_mut().insert(id, fv_info);
                     }
                     c::tag_table_tcache => {
                         let tpbt = val_dsr.read_ty_param_bounds_and_ty(xcx);
                         let lid = ast::DefId { krate: ast::LOCAL_CRATE, node: id };
-                        dcx.tcx.tcache.borrow_mut().insert(lid, tpbt);
+                        xcx.dcx.tcx.tcache.borrow_mut().insert(lid, tpbt);
                     }
                     c::tag_table_param_defs => {
                         let bounds = val_dsr.read_type_param_def(xcx);
-                        dcx.tcx.ty_param_defs.borrow_mut().insert(id, bounds);
+                        xcx.dcx.tcx.ty_param_defs.borrow_mut().insert(id, bounds);
                     }
                     c::tag_table_method_map => {
                         let (autoderef, method) = val_dsr.read_method_callee(xcx);
@@ -1358,7 +1370,7 @@ fn decode_side_tables(xcx: &ExtendedDecodeContext,
                             expr_id: id,
                             autoderef: autoderef
                         };
-                        dcx.tcx.method_map.borrow_mut().insert(method_call, method);
+                        xcx.dcx.tcx.method_map.borrow_mut().insert(method_call, method);
                     }
                     c::tag_table_vtable_map => {
                         let (autoderef, vtable_res) =
@@ -1368,11 +1380,11 @@ fn decode_side_tables(xcx: &ExtendedDecodeContext,
                             expr_id: id,
                             autoderef: autoderef
                         };
-                        dcx.tcx.vtable_map.borrow_mut().insert(vtable_key, vtable_res);
+                        xcx.dcx.tcx.vtable_map.borrow_mut().insert(vtable_key, vtable_res);
                     }
                     c::tag_table_adjustments => {
                         let adj: ty::AutoAdjustment = val_dsr.read_auto_adjustment(xcx);
-                        dcx.tcx.adjustments.borrow_mut().insert(id, adj);
+                        xcx.dcx.tcx.adjustments.borrow_mut().insert(id, adj);
                     }
                     _ => {
                         xcx.dcx.tcx.sess.bug(
@@ -1391,17 +1403,17 @@ fn decode_side_tables(xcx: &ExtendedDecodeContext,
 // Testing of astencode_gen
 
 #[cfg(test)]
-fn encode_item_ast(ebml_w: &mut Encoder, item: @ast::Item) {
+fn encode_item_ast(ebml_w: &mut Encoder, item: &ast::Item) {
     ebml_w.start_tag(c::tag_tree as uint);
     (*item).encode(ebml_w);
     ebml_w.end_tag();
 }
 
 #[cfg(test)]
-fn decode_item_ast(par_doc: ebml::Doc) -> @ast::Item {
+fn decode_item_ast(par_doc: ebml::Doc) -> ast::Item {
     let chi_doc = par_doc.get(c::tag_tree as uint);
     let mut d = reader::Decoder(chi_doc);
-    @Decodable::decode(&mut d).unwrap()
+    Decodable::decode(&mut d).unwrap()
 }
 
 #[cfg(test)]
@@ -1436,19 +1448,16 @@ fn mk_ctxt() -> parse::ParseSess {
 }
 
 #[cfg(test)]
-fn roundtrip(in_item: Option<@ast::Item>) {
+fn roundtrip(in_item: Option<P<ast::Item>>) {
     use std::io::MemWriter;
 
     let in_item = in_item.unwrap();
     let mut wr = MemWriter::new();
-    {
-        let mut ebml_w = writer::Encoder(&mut wr);
-        encode_item_ast(&mut ebml_w, in_item);
-    }
+    encode_item_ast(&mut writer::Encoder(&mut wr), &*in_item);
     let ebml_doc = reader::Doc(wr.get_ref());
     let out_item = decode_item_ast(ebml_doc);
 
-    assert!(in_item == out_item);
+    assert!(*in_item == out_item);
 }
 
 #[test]
@@ -1487,7 +1496,7 @@ fn test_simplification() {
             return alist {eq_fn: eq_int, data: Vec::new()};
         }
     ).unwrap();
-    let item_in = e::IIItemRef(item);
+    let item_in = ast::IIItemRef(&*item);
     let item_out = simplify_ast(item_in);
     let item_exp = ast::IIItem(quote_item!(cx,
         fn new_int_alist<B>() -> alist<int, B> {
@@ -1496,7 +1505,7 @@ fn test_simplification() {
     ).unwrap());
     match (item_out, item_exp) {
       (ast::IIItem(item_out), ast::IIItem(item_exp)) => {
-        assert!(pprust::item_to_str(item_out) == pprust::item_to_str(item_exp));
+        assert!(pprust::item_to_str(&*item_out) == pprust::item_to_str(&*item_exp));
       }
       _ => fail!()
     }

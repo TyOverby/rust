@@ -520,6 +520,12 @@ impl<T:Repr> Repr for Rc<T> {
     }
 }
 
+impl<'a, T:Repr> Repr for &'a T {
+    fn repr(&self, tcx: &ctxt) -> StrBuf {
+        self.repr(tcx)
+    }
+}
+
 impl<T:Repr> Repr for @T {
     fn repr(&self, tcx: &ctxt) -> StrBuf {
         (&**self).repr(tcx)
@@ -720,21 +726,20 @@ impl Repr for ast::DefId {
         // a path for a def-id, so I'll just make a best effort for now
         // and otherwise fallback to just printing the crate/node pair
         if self.krate == ast::LOCAL_CRATE {
-            {
-                match tcx.map.find(self.node) {
-                    Some(ast_map::NodeItem(..)) |
-                    Some(ast_map::NodeForeignItem(..)) |
-                    Some(ast_map::NodeMethod(..)) |
-                    Some(ast_map::NodeTraitMethod(..)) |
-                    Some(ast_map::NodeVariant(..)) |
-                    Some(ast_map::NodeStructCtor(..)) => {
-                        return format_strbuf!(
+            match tcx.map.find(self.node) {
+                Some(ast_map::NodeItem(..)) |
+                Some(ast_map::NodeForeignItem(..)) |
+                Some(ast_map::NodeMethod(..)) |
+                Some(ast_map::NodeRequiredTraitMethod(..)) |
+                Some(ast_map::NodeProvidedTraitMethod(..)) |
+                Some(ast_map::NodeVariant(..)) |
+                Some(ast_map::NodeStructCtor(..)) => {
+                    return format_strbuf!(
                                 "{:?}:{}",
                                 *self,
                                 ty::item_path_str(tcx, *self))
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
         }
         return format_strbuf!("{:?}", *self)

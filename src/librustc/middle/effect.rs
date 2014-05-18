@@ -60,9 +60,9 @@ impl<'a> EffectCheckVisitor<'a> {
         }
     }
 
-    fn check_str_index(&mut self, e: @ast::Expr) {
+    fn check_str_index(&mut self, e: &ast::Expr) {
         let base_type = match e.node {
-            ast::ExprIndex(base, _) => ty::node_id_to_type(self.tcx, base.id),
+            ast::ExprIndex(ref base, _) => ty::node_id_to_type(self.tcx, base.id),
             _ => return
         };
         debug!("effect: checking index with base type {}",
@@ -151,7 +151,7 @@ impl<'a> Visitor<()> for EffectCheckVisitor<'a> {
                                         "invocation of unsafe method")
                 }
             }
-            ast::ExprCall(base, _) => {
+            ast::ExprCall(ref base, _) => {
                 let base_type = ty::node_id_to_type(self.tcx, base.id);
                 debug!("effect: call case, base type is {}",
                        ppaux::ty_to_str(self.tcx, base_type));
@@ -159,7 +159,7 @@ impl<'a> Visitor<()> for EffectCheckVisitor<'a> {
                     self.require_unsafe(expr.span, "call to unsafe function")
                 }
             }
-            ast::ExprUnary(ast::UnDeref, base) => {
+            ast::ExprUnary(ast::UnDeref, ref base) => {
                 let base_type = ty::node_id_to_type(self.tcx, base.id);
                 debug!("effect: unary case, base type is {}",
                         ppaux::ty_to_str(self.tcx, base_type));
@@ -171,11 +171,11 @@ impl<'a> Visitor<()> for EffectCheckVisitor<'a> {
                     _ => {}
                 }
             }
-            ast::ExprAssign(base, _) | ast::ExprAssignOp(_, base, _) => {
-                self.check_str_index(base);
+            ast::ExprAssign(ref base, _) | ast::ExprAssignOp(_, ref base, _) => {
+                self.check_str_index(&**base);
             }
-            ast::ExprAddrOf(ast::MutMutable, base) => {
-                self.check_str_index(base);
+            ast::ExprAddrOf(ast::MutMutable, ref base) => {
+                self.check_str_index(&**base);
             }
             ast::ExprInlineAsm(..) => {
                 self.require_unsafe(expr.span, "use of inline assembly")

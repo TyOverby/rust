@@ -55,6 +55,7 @@ use std::i32;
 use std::i64;
 use std::i8;
 use std::rc::Rc;
+use std::slice;
 use std::to_str::ToStr;
 use std::u16;
 use std::u32;
@@ -69,6 +70,7 @@ use syntax::attr;
 use syntax::codemap::Span;
 use syntax::parse::token::InternedString;
 use syntax::parse::token;
+use syntax::ptr::P;
 use syntax::visit::Visitor;
 use syntax::{ast, ast_util, visit};
 
@@ -611,13 +613,13 @@ impl<'a> Context<'a> {
 // Return true if that's the case. Otherwise return false.
 pub fn each_lint(sess: &session::Session,
                  attrs: &[ast::Attribute],
-                 f: |@ast::MetaItem, level, InternedString| -> bool)
+                 f: |&ast::MetaItem, level, InternedString| -> bool)
                  -> bool {
     let xs = [allow, warn, deny, forbid];
     for &level in xs.iter() {
         let level_name = level_to_str(level);
         for attr in attrs.iter().filter(|m| m.name().equiv(&level_name)) {
-            let meta = attr.node.value;
+            let meta = &attr.node.value;
             let metas = match meta.node {
                 ast::MetaList(_, ref metas) => metas,
                 _ => {
@@ -628,7 +630,7 @@ pub fn each_lint(sess: &session::Session,
             for meta in metas.iter() {
                 match meta.node {
                     ast::MetaWord(ref lintname) => {
-                        if !f(*meta, level, (*lintname).clone()) {
+                        if !f(&**meta, level, (*lintname).clone()) {
                             return false;
                         }
                     }
@@ -665,9 +667,9 @@ pub fn contains_lint(attrs: &[ast::Attribute],
 
 fn check_while_true_expr(cx: &Context, e: &ast::Expr) {
     match e.node {
-        ast::ExprWhile(cond, _) => {
+        ast::ExprWhile(ref cond, _) => {
             match cond.node {
-                ast::ExprLit(lit) => {
+                ast::ExprLit(ref lit) => {
                     match lit.node {
                         ast::LitBool(true) => {
                             cx.span_lint(WhileTrue,
@@ -703,9 +705,9 @@ impl<'a> AstConv for Context<'a>{
 
 fn check_unused_casts(cx: &Context, e: &ast::Expr) {
     return match e.node {
-        ast::ExprCast(expr, ty) => {
-            let t_t = ast_ty_to_ty(cx, &infer::new_infer_ctxt(cx.tcx), ty);
-            if  ty::get(ty::expr_ty(cx.tcx, expr)).sty == ty::get(t_t).sty {
+        ast::ExprCast(ref expr, ref ty) => {
+            let t_t = ast_ty_to_ty(cx, &infer::new_infer_ctxt(cx.tcx), &**ty);
+            if  ty::get(ty::expr_ty(cx.tcx, &**expr)).sty == ty::get(t_t).sty {
                 cx.span_lint(UnnecessaryTypecast, ty.span,
                              "unnecessary type cast");
             }
@@ -716,9 +718,9 @@ fn check_unused_casts(cx: &Context, e: &ast::Expr) {
 
 fn check_type_limits(cx: &Context, e: &ast::Expr) {
     return match e.node {
-        ast::ExprUnary(ast::UnNeg, ex) => {
+        ast::ExprUnary(ast::UnNeg, ref ex) => {
             match ex.node  {
-                ast::ExprLit(lit) => {
+                ast::ExprLit(ref lit) => {
                     match lit.node {
                         ast::LitUint(..) => {
                             cx.span_lint(UnsignedNegate, e.span,
@@ -728,7 +730,7 @@ fn check_type_limits(cx: &Context, e: &ast::Expr) {
                     }
                 },
                 _ => {
-                    let t = ty::expr_ty(cx.tcx, ex);
+                    let t = ty::expr_ty(cx.tcx, &**ex);
                     match ty::get(t).sty {
                         ty::ty_uint(_) => {
                             cx.span_lint(UnsignedNegate, e.span,
@@ -739,13 +741,13 @@ fn check_type_limits(cx: &Context, e: &ast::Expr) {
                 }
             }
         },
-        ast::ExprBinary(binop, l, r) => {
-            if is_comparison(binop) && !check_limits(cx.tcx, binop, l, r) {
+        ast::ExprBinary(binop, ref l, ref r) => {
+            if is_comparison(binop) && !check_limits(cx.tcx, binop, &**l, &**r) {
                 cx.span_lint(TypeLimits, e.span,
                              "comparison is useless due to type limits");
             }
         },
-        ast::ExprLit(lit) => {
+        ast::ExprLit(ref lit) => {
             match ty::get(ty::expr_ty(cx.tcx, e)).sty {
                 ty::ty_int(t) => {
                     let int_type = if t == ast::TyI {
@@ -847,7 +849,7 @@ fn check_type_limits(cx: &Context, e: &ast::Expr) {
             ty::ty_int(int_ty) => {
                 let (min, max) = int_ty_range(int_ty);
                 let lit_val: i64 = match lit.node {
-                    ast::ExprLit(li) => match li.node {
+                    ast::ExprLit(ref li) => match li.node {
                         ast::LitInt(v, _) => v,
                         ast::LitUint(v, _) => v as i64,
                         ast::LitIntUnsuffixed(v) => v,
@@ -860,7 +862,7 @@ fn check_type_limits(cx: &Context, e: &ast::Expr) {
             ty::ty_uint(uint_ty) => {
                 let (min, max): (u64, u64) = uint_ty_range(uint_ty);
                 let lit_val: u64 = match lit.node {
-                    ast::ExprLit(li) => match li.node {
+                    ast::ExprLit(ref li) => match li.node {
                         ast::LitInt(v, _) => v as u64,
                         ast::LitUint(v, _) => v,
                         ast::LitIntUnsuffixed(v) => v as u64,
@@ -909,24 +911,24 @@ fn check_item_ctypes(cx: &Context, it: &ast::Item) {
                     _ => ()
                 }
             }
-            ast::TyPtr(ref mt) => { check_ty(cx, mt.ty) }
+            ast::TyPtr(ref mt) => { check_ty(cx, &*mt.ty) }
             _ => {}
         }
     }
 
     fn check_foreign_fn(cx: &Context, decl: &ast::FnDecl) {
         for input in decl.inputs.iter() {
-            check_ty(cx, input.ty);
+            check_ty(cx, &*input.ty);
         }
-        check_ty(cx, decl.output)
+        check_ty(cx, &*decl.output)
     }
 
     match it.node {
       ast::ItemForeignMod(ref nmod) if nmod.abi != abi::RustIntrinsic => {
         for ni in nmod.items.iter() {
             match ni.node {
-                ast::ForeignItemFn(decl, _) => check_foreign_fn(cx, decl),
-                ast::ForeignItemStatic(t, _) => check_ty(cx, t)
+                ast::ForeignItemFn(ref decl, _) => check_foreign_fn(cx, &**decl),
+                ast::ForeignItemStatic(ref t, _) => check_ty(cx, &**t)
             }
         }
       }
@@ -989,7 +991,7 @@ fn check_heap_item(cx: &Context, it: &ast::Item) {
 
     // If it's a struct, we also have to check the fields' types
     match it.node {
-        ast::ItemStruct(struct_def, _) => {
+        ast::ItemStruct(ref struct_def, _) => {
             for struct_field in struct_def.fields.iter() {
                 check_heap_type(cx, struct_field.span,
                                 ty::node_id_to_type(cx.tcx,
@@ -1140,7 +1142,7 @@ fn check_heap_expr(cx: &Context, e: &ast::Expr) {
 
 fn check_path_statement(cx: &Context, s: &ast::Stmt) {
     match s.node {
-        ast::StmtSemi(expr, _) => {
+        ast::StmtSemi(ref expr, _) => {
             match expr.node {
                 ast::ExprPath(_) => {
                     cx.span_lint(PathStatement,
@@ -1156,7 +1158,7 @@ fn check_path_statement(cx: &Context, s: &ast::Stmt) {
 
 fn check_unused_result(cx: &Context, s: &ast::Stmt) {
     let expr = match s.node {
-        ast::StmtSemi(expr, _) => expr,
+        ast::StmtSemi(ref expr, _) => &**expr,
         _ => return
     };
     let t = ty::expr_ty(cx.tcx, expr);
@@ -1339,22 +1341,22 @@ fn check_unnecessary_parens_core(cx: &Context, value: &ast::Expr, msg: &str) {
 
 fn check_unnecessary_parens_expr(cx: &Context, e: &ast::Expr) {
     let (value, msg) = match e.node {
-        ast::ExprIf(cond, _, _) => (cond, "`if` condition"),
-        ast::ExprWhile(cond, _) => (cond, "`while` condition"),
-        ast::ExprMatch(head, _) => (head, "`match` head expression"),
-        ast::ExprRet(Some(value)) => (value, "`return` value"),
-        ast::ExprAssign(_, value) => (value, "assigned value"),
-        ast::ExprAssignOp(_, _, value) => (value, "assigned value"),
+        ast::ExprIf(ref cond, _, _) => (cond, "`if` condition"),
+        ast::ExprWhile(ref cond, _) => (cond, "`while` condition"),
+        ast::ExprMatch(ref head, _) => (head, "`match` head expression"),
+        ast::ExprRet(Some(ref value)) => (value, "`return` value"),
+        ast::ExprAssign(_, ref value) => (value, "assigned value"),
+        ast::ExprAssignOp(_, _, ref value) => (value, "assigned value"),
         _ => return
     };
-    check_unnecessary_parens_core(cx, value, msg);
+    check_unnecessary_parens_core(cx, &**value, msg);
 }
 
 fn check_unnecessary_parens_stmt(cx: &Context, s: &ast::Stmt) {
     let (value, msg) = match s.node {
-        ast::StmtDecl(decl, _) => match decl.node {
-            ast::DeclLocal(local) => match local.init {
-                Some(value) => (value, "assigned value"),
+        ast::StmtDecl(ref decl, _) => match decl.node {
+            ast::DeclLocal(ref local) => match local.init {
+                Some(ref value) => (&**value, "assigned value"),
                 None => return
             },
             _ => return
@@ -1388,12 +1390,12 @@ fn check_unsafe_block(cx: &Context, e: &ast::Expr) {
     }
 }
 
-fn check_unused_mut_pat(cx: &Context, pats: &[@ast::Pat]) {
+fn check_unused_mut_pat(cx: &Context, pats: &[P<ast::Pat>]) {
     // collect all mutable pattern and group their NodeIDs by their Identifier to
     // avoid false warnings in match arms with multiple patterns
     let mut mutables = HashMap::new();
-    for &p in pats.iter() {
-        pat_util::pat_bindings(&cx.tcx.def_map, p, |mode, id, _, path| {
+    for p in pats.iter() {
+        pat_util::pat_bindings(&cx.tcx.def_map, &**p, |mode, id, _, path| {
             match mode {
                 ast::BindByValue(ast::MutMutable) => {
                     if path.segments.len() != 1 {
@@ -1432,9 +1434,9 @@ fn check_unnecessary_allocation(cx: &Context, e: &ast::Expr) {
     // Warn if string and vector literals with sigils, or boxing expressions,
     // are immediately borrowed.
     let allocation = match e.node {
-        ast::ExprVstore(e2, ast::ExprVstoreUniq) => {
+        ast::ExprVstore(ref e2, ast::ExprVstoreUniq) => {
             match e2.node {
-                ast::ExprLit(lit) if ast_util::lit_is_str(lit) => {
+                ast::ExprLit(ref lit) if ast_util::lit_is_str(&**lit) => {
                     VectorAllocation
                 }
                 ast::ExprVec(..) => VectorAllocation,
@@ -1592,7 +1594,7 @@ fn check_stability(cx: &Context, e: &ast::Expr) {
     let id = match e.node {
         ast::ExprPath(..) | ast::ExprStruct(..) => {
             match cx.tcx.def_map.borrow().find(&e.id) {
-                Some(&def) => ast_util::def_id_of_def(def),
+                Some(def) => ast_util::def_id_of_def(def.clone()),
                 None => return
             }
         }
@@ -1650,7 +1652,7 @@ fn check_stability(cx: &Context, e: &ast::Expr) {
         // stability one.
         csearch::get_item_attrs(&cx.tcx.sess.cstore, id, |meta_items| {
             if s.is_none() {
-                s = attr::find_stability(meta_items.move_iter())
+                s = attr::find_stability(meta_items.iter())
             }
         });
         s
@@ -1721,13 +1723,13 @@ impl<'a> Visitor<()> for Context<'a> {
 
     fn visit_expr(&mut self, e: &ast::Expr, _: ()) {
         match e.node {
-            ast::ExprUnary(ast::UnNeg, expr) => {
+            ast::ExprUnary(ast::UnNeg, ref expr) => {
                 // propagate negation, if the negation itself isn't negated
                 if self.negated_expr_id != e.id {
                     self.negated_expr_id = expr.id;
                 }
             },
-            ast::ExprParen(expr) => if self.negated_expr_id == e.id {
+            ast::ExprParen(ref expr) => if self.negated_expr_id == e.id {
                 self.negated_expr_id = expr.id
             },
             ast::ExprMatch(_, ref arms) => {
@@ -1759,10 +1761,10 @@ impl<'a> Visitor<()> for Context<'a> {
         check_unnecessary_parens_stmt(self, s);
 
         match s.node {
-            ast::StmtDecl(d, _) => {
+            ast::StmtDecl(ref d, _) => {
                 match d.node {
-                    ast::DeclLocal(l) => {
-                        check_unused_mut_pat(self, &[l.pat]);
+                    ast::DeclLocal(ref l) => {
+                        check_unused_mut_pat(self, slice::ref_slice(&l.pat));
                     },
                     _ => {}
                 }
@@ -1780,7 +1782,7 @@ impl<'a> Visitor<()> for Context<'a> {
         };
 
         for a in decl.inputs.iter(){
-            check_unused_mut_pat(self, &[a.pat]);
+            check_unused_mut_pat(self, slice::ref_slice(&a.pat));
         }
 
         match *fk {

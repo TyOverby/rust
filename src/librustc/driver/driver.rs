@@ -652,15 +652,15 @@ pub fn pretty_print_input(sess: Session,
         }
         PpmFlowGraph(nodeid) => {
             let ast_map = ast_map.expect("--pretty flowgraph missing ast_map");
-            let node = ast_map.find(nodeid).unwrap_or_else(|| {
+            let analysis = phase_3_run_analysis_passes(sess, &krate, ast_map);
+            let node = analysis.ty_cx.map.find(nodeid).unwrap_or_else(|| {
                 fail!("--pretty flowgraph=id couldn't find id: {}", id)
             });
             let block = match node {
                 syntax::ast_map::NodeBlock(block) => block,
                 _ => fail!("--pretty=flowgraph needs block, got {:?}", node)
             };
-            let analysis = phase_3_run_analysis_passes(sess, &krate, ast_map);
-            print_flowgraph(analysis, block, out)
+            print_flowgraph(&analysis, block, out)
         }
         _ => {
             pprust::print_crate(sess.codemap(),
@@ -676,8 +676,8 @@ pub fn pretty_print_input(sess: Session,
 
 }
 
-fn print_flowgraph<W:io::Writer>(analysis: CrateAnalysis,
-                                 block: ast::P<ast::Block>,
+fn print_flowgraph<W:io::Writer>(analysis: &CrateAnalysis,
+                                 block: &ast::Block,
                                  mut out: W) -> io::IoResult<()> {
     let ty_cx = &analysis.ty_cx;
     let cfg = cfg::CFG::new(ty_cx, block);

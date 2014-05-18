@@ -122,16 +122,11 @@ pub fn monomorphic_fn(ccx: &CrateContext,
                 return (get_item_val(ccx, fn_id.node), true);
             }
         }
-        ast_map::NodeTraitMethod(method) => {
-            match *method {
-                ast::Provided(m) => {
-                    // If this is a static provided method, indicate that
-                    // and stash the number of params on the method.
-                    if m.explicit_self.node == ast::SelfStatic {
-                        is_static_provided = Some(m.generics.ty_params.len());
-                    }
-                }
-                _ => {}
+        ast_map::NodeProvidedTraitMethod(m) => {
+            // If this is a static provided method, indicate that
+            // and stash the number of params on the method.
+            if m.explicit_self.node == ast::SelfStatic {
+                is_static_provided = Some(m.generics.ty_params.len());
             }
         }
         _ => {}
@@ -226,12 +221,12 @@ pub fn monomorphic_fn(ccx: &CrateContext,
         ast_map::NodeItem(i) => {
             match *i {
               ast::Item {
-                  node: ast::ItemFn(decl, _, _, _, body),
+                  node: ast::ItemFn(ref decl, _, _, _, ref body),
                   ..
               } => {
                   let d = mk_lldecl();
                   set_llvm_fn_attrs(i.attrs.as_slice(), d);
-                  trans_fn(ccx, decl, body, d, Some(&psubsts), fn_id.node, []);
+                  trans_fn(ccx, &**decl, &**body, d, Some(&psubsts), fn_id.node, []);
                   d
               }
               _ => {
@@ -271,25 +266,11 @@ pub fn monomorphic_fn(ccx: &CrateContext,
             }
             d
         }
-        ast_map::NodeMethod(mth) => {
+        ast_map::NodeProvidedTraitMethod(mth) | ast_map::NodeMethod(mth) => {
             let d = mk_lldecl();
             set_llvm_fn_attrs(mth.attrs.as_slice(), d);
-            trans_fn(ccx, mth.decl, mth.body, d, Some(&psubsts), mth.id, []);
+            trans_fn(ccx, &*mth.decl, &*mth.body, d, Some(&psubsts), mth.id, []);
             d
-        }
-        ast_map::NodeTraitMethod(method) => {
-            match *method {
-                ast::Provided(mth) => {
-                    let d = mk_lldecl();
-                    set_llvm_fn_attrs(mth.attrs.as_slice(), d);
-                    trans_fn(ccx, mth.decl, mth.body, d, Some(&psubsts), mth.id, []);
-                    d
-                }
-                _ => {
-                    ccx.sess().bug(format!("can't monomorphize a {:?}",
-                                           map_node))
-                }
-            }
         }
         ast_map::NodeStructCtor(struct_def) => {
             let d = mk_lldecl();
@@ -304,6 +285,7 @@ pub fn monomorphic_fn(ccx: &CrateContext,
         }
 
         // Ugh -- but this ensures any new variants won't be forgotten
+        ast_map::NodeRequiredTraitMethod(..) |
         ast_map::NodeLifetime(..) |
         ast_map::NodeExpr(..) |
         ast_map::NodeStmt(..) |

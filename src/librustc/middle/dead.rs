@@ -40,10 +40,11 @@ fn should_explore(tcx: &ty::ctxt, def_id: ast::DefId) -> bool {
     }
 
     match tcx.map.find(def_id.node) {
-        Some(ast_map::NodeItem(..))
-        | Some(ast_map::NodeMethod(..))
-        | Some(ast_map::NodeForeignItem(..))
-        | Some(ast_map::NodeTraitMethod(..)) => true,
+        Some(ast_map::NodeItem(..)) |
+        Some(ast_map::NodeRequiredTraitMethod(..)) |
+        Some(ast_map::NodeProvidedTraitMethod(..)) |
+        Some(ast_map::NodeMethod(..)) |
+        Some(ast_map::NodeForeignItem(..)) => true,
         _ => false
     }
 }
@@ -156,11 +157,11 @@ impl<'a> MarkSymbolVisitor<'a> {
                     _ => ()
                 }
             }
-            ast_map::NodeTraitMethod(trait_method) => {
-                visit::walk_trait_method(self, trait_method, ());
+            ast_map::NodeRequiredTraitMethod(trait_method) => {
+                visit::walk_ty_method(self, trait_method, ());
             }
-            ast_map::NodeMethod(method) => {
-                visit::walk_block(self, method.body, ());
+            ast_map::NodeProvidedTraitMethod(method) | ast_map::NodeMethod(method) => {
+                visit::walk_block(self, &*method.body, ());
             }
             ast_map::NodeForeignItem(foreign_item) => {
                 visit::walk_foreign_item(self, foreign_item, ());
@@ -305,7 +306,7 @@ fn should_warn(item: &ast::Item) -> bool {
 
 fn get_struct_ctor_id(item: &ast::Item) -> Option<ast::NodeId> {
     match item.node {
-        ast::ItemStruct(struct_def, _) => struct_def.ctor_id,
+        ast::ItemStruct(ref struct_def, _) => struct_def.ctor_id,
         _ => None
     }
 }
@@ -401,7 +402,9 @@ impl<'a> Visitor<()> for DeadVisitor<'a> {
     // Overwrite so that we don't warn the trait method itself.
     fn visit_trait_method(&mut self, trait_method: &ast::TraitMethod, _: ()) {
         match *trait_method {
-            ast::Provided(method) => visit::walk_block(self, method.body, ()),
+            ast::Provided(ref method) => {
+                visit::walk_block(self, &*method.body, ())
+            }
             ast::Required(_) => ()
         }
     }

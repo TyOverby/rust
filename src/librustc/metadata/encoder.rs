@@ -48,17 +48,11 @@ use syntax::diagnostic::SpanHandler;
 use syntax::parse::token::InternedString;
 use syntax::parse::token::special_idents;
 use syntax::parse::token;
+use syntax::ptr::P;
 use syntax::visit::Visitor;
 use syntax::visit;
 use syntax;
 use writer = serialize::ebml::writer;
-
-/// A borrowed version of ast::InlinedItem.
-pub enum InlinedItemRef<'a> {
-    IIItemRef(&'a ast::Item),
-    IIMethodRef(ast::DefId, bool, &'a ast::Method),
-    IIForeignRef(&'a ast::ForeignItem)
-}
 
 pub type Encoder<'a> = writer::Encoder<'a, MemWriter>;
 
@@ -473,7 +467,7 @@ fn encode_reexported_static_methods(ecx: &EncodeContext,
 /// * For enums, iterates through the node IDs of the variants.
 ///
 /// * For newtype structs, iterates through the node ID of the constructor.
-fn each_auxiliary_node_id(item: @Item, callback: |NodeId| -> bool) -> bool {
+fn each_auxiliary_node_id(item: &Item, callback: |NodeId| -> bool) -> bool {
     let mut continue_ = true;
     match item.node {
         ItemEnum(ref enum_def, _) => {
@@ -484,7 +478,7 @@ fn each_auxiliary_node_id(item: @Item, callback: |NodeId| -> bool) -> bool {
                 }
             }
         }
-        ItemStruct(struct_def, _) => {
+        ItemStruct(ref struct_def, _) => {
             // If this is a newtype struct, return the constructor.
             match struct_def.ctor_id {
                 Some(ctor_id) if struct_def.fields.len() > 0 &&
@@ -552,7 +546,7 @@ fn encode_info_for_mod(ecx: &EncodeContext,
         ebml_w.wr_str(def_to_str(local_def(item.id)).as_slice());
         ebml_w.end_tag();
 
-        each_auxiliary_node_id(*item, |auxiliary_node_id| {
+        each_auxiliary_node_id(&**item, |auxiliary_node_id| {
             ebml_w.start_tag(tag_mod_child);
             ebml_w.wr_str(def_to_str(local_def(
                         auxiliary_node_id)).as_slice());
@@ -742,7 +736,7 @@ fn encode_info_for_method(ecx: &EncodeContext,
                           impl_path: PathElems,
                           is_default_impl: bool,
                           parent_id: NodeId,
-                          ast_method_opt: Option<@Method>) {
+                          ast_method_opt: Option<&Method>) {
 
     debug!("encode_info_for_method: {:?} {}", m.def_id,
            token::get_ident(m.ident));
@@ -980,7 +974,7 @@ fn encode_info_for_item(ecx: &EncodeContext,
                                  index,
                                  generics);
       }
-      ItemStruct(struct_def, _) => {
+      ItemStruct(ref struct_def, _) => {
         let fields = ty::lookup_struct_fields(tcx, def_id);
 
         /* First, encode the fields
@@ -1030,7 +1024,7 @@ fn encode_info_for_item(ecx: &EncodeContext,
             None => {}
         }
       }
-      ItemImpl(_, ref opt_trait, ty, ref ast_methods) => {
+      ItemImpl(_, ref opt_trait, ref ty, ref ast_methods) => {
         // We need to encode information about the default methods we
         // have inherited, so we drive this based on the impl structure.
         let impl_methods = tcx.impl_methods.borrow();
@@ -1074,7 +1068,7 @@ fn encode_info_for_item(ecx: &EncodeContext,
         let num_implemented_methods = ast_methods.len();
         for (i, &method_def_id) in methods.iter().enumerate() {
             let ast_method = if i < num_implemented_methods {
-                Some(*ast_methods.get(i))
+                Some(&**ast_methods.get(i))
             } else { None };
 
             index.push(entry {
@@ -1175,7 +1169,7 @@ fn encode_info_for_item(ecx: &EncodeContext,
                     encode_method_sort(ebml_w, 'r');
                 }
 
-                &Provided(m) => {
+                &Provided(ref m) => {
                     encode_attributes(ebml_w, m.attrs.as_slice());
                     // If this is a static method, we've already encoded
                     // this.
@@ -1186,7 +1180,7 @@ fn encode_info_for_item(ecx: &EncodeContext,
                     }
                     encode_method_sort(ebml_w, 'p');
                     encode_inlined_item(ecx, ebml_w,
-                                        IIMethodRef(def_id, true, m));
+                                        IIMethodRef(def_id, true, &**m));
                 }
             }
 
@@ -1380,7 +1374,7 @@ fn write_i64(writer: &mut MemWriter, &n: &i64) {
     wr.write_be_u32(n as u32);
 }
 
-fn encode_meta_item(ebml_w: &mut Encoder, mi: @MetaItem) {
+fn encode_meta_item(ebml_w: &mut Encoder, mi: &MetaItem) {
     match mi.node {
       MetaWord(ref name) => {
         ebml_w.start_tag(tag_meta_item_word);
@@ -1410,7 +1404,7 @@ fn encode_meta_item(ebml_w: &mut Encoder, mi: @MetaItem) {
         ebml_w.writer.write(name.get().as_bytes());
         ebml_w.end_tag();
         for inner_item in items.iter() {
-            encode_meta_item(ebml_w, *inner_item);
+            encode_meta_item(ebml_w, &**inner_item);
         }
         ebml_w.end_tag();
       }
@@ -1421,7 +1415,7 @@ fn encode_attributes(ebml_w: &mut Encoder, attrs: &[Attribute]) {
     ebml_w.start_tag(tag_attributes);
     for attr in attrs.iter() {
         ebml_w.start_tag(tag_attribute);
-        encode_meta_item(ebml_w, attr.node.value);
+        encode_meta_item(ebml_w, &*attr.node.value);
         ebml_w.end_tag();
     }
     ebml_w.end_tag();
@@ -1445,7 +1439,7 @@ fn synthesize_crate_attrs(ecx: &EncodeContext,
     let mut attrs = Vec::new();
     for attr in krate.attrs.iter() {
         if !attr.name().equiv(&("crate_id")) {
-            attrs.push(*attr);
+            attrs.push(attr.clone());
         }
     }
     attrs.push(synthesize_crateid_attr(ecx));
@@ -1648,12 +1642,12 @@ fn encode_misc_info(ecx: &EncodeContext,
                     ebml_w: &mut Encoder) {
     ebml_w.start_tag(tag_misc_info);
     ebml_w.start_tag(tag_misc_info_crate_items);
-    for &item in krate.module.items.iter() {
+    for item in krate.module.items.iter() {
         ebml_w.start_tag(tag_mod_child);
         ebml_w.wr_str(def_to_str(local_def(item.id)).as_slice());
         ebml_w.end_tag();
 
-        each_auxiliary_node_id(item, |auxiliary_node_id| {
+        each_auxiliary_node_id(&**item, |auxiliary_node_id| {
             ebml_w.start_tag(tag_mod_child);
             ebml_w.wr_str(def_to_str(local_def(
                         auxiliary_node_id)).as_slice());

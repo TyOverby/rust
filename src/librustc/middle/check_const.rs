@@ -43,14 +43,14 @@ pub fn check_crate(krate: &Crate, tcx: &ty::ctxt) {
 
 fn check_item(v: &mut CheckCrateVisitor, it: &Item, _is_const: bool) {
     match it.node {
-        ItemStatic(_, _, ex) => {
-            v.visit_expr(ex, true);
+        ItemStatic(_, _, ref ex) => {
+            v.visit_expr(&**ex, true);
             check_item_recursion(&v.tcx.sess, &v.tcx.map, &v.tcx.def_map, it);
         }
         ItemEnum(ref enum_definition, _) => {
             for var in (*enum_definition).variants.iter() {
                 for ex in var.node.disr_expr.iter() {
-                    v.visit_expr(*ex, true);
+                    v.visit_expr(&**ex, true);
                 }
             }
         }
@@ -61,9 +61,9 @@ fn check_item(v: &mut CheckCrateVisitor, it: &Item, _is_const: bool) {
 fn check_pat(v: &mut CheckCrateVisitor, p: &Pat, _is_const: bool) {
     fn is_str(e: &Expr) -> bool {
         match e.node {
-            ExprVstore(expr, ExprVstoreUniq) => {
+            ExprVstore(ref expr, ExprVstoreUniq) => {
                 match expr.node {
-                    ExprLit(lit) => ast_util::lit_is_str(lit),
+                    ExprLit(ref lit) => ast_util::lit_is_str(&**lit),
                     _ => false,
                 }
             }
@@ -72,12 +72,12 @@ fn check_pat(v: &mut CheckCrateVisitor, p: &Pat, _is_const: bool) {
     }
     match p.node {
       // Let through plain ~-string literals here
-      PatLit(a) => if !is_str(a) { v.visit_expr(a, true); },
-      PatRange(a, b) => {
-        if !is_str(a) { v.visit_expr(a, true); }
-        if !is_str(b) { v.visit_expr(b, true); }
-      }
-      _ => visit::walk_pat(v, p, false)
+        PatLit(ref a) => if !is_str(&**a) { v.visit_expr(&**a, true); },
+        PatRange(ref a, ref b) => {
+            if !is_str(&**a) { v.visit_expr(&**a, true); }
+            if !is_str(&**b) { v.visit_expr(&**b, true); }
+        }
+        _ => visit::walk_pat(v, p, false)
     }
 }
 
@@ -90,7 +90,7 @@ fn check_expr(v: &mut CheckCrateVisitor, e: &Expr, is_const: bool) {
                                 "cannot do allocations in constant expressions");
             return;
           }
-          ExprLit(lit) if ast_util::lit_is_str(lit) => {}
+          ExprLit(ref lit) if ast_util::lit_is_str(&**lit) => {}
           ExprBinary(..) | ExprUnary(..) => {
             let method_call = typeck::MethodCall::expr(e.id);
             if v.tcx.method_map.borrow().contains_key(&method_call) {
@@ -137,7 +137,7 @@ fn check_expr(v: &mut CheckCrateVisitor, e: &Expr, is_const: bool) {
               }
             }
           }
-          ExprCall(callee, _) => {
+          ExprCall(ref callee, _) => {
             match v.tcx.def_map.borrow().find(&callee.id) {
                 Some(&DefStruct(..)) => {}    // OK.
                 Some(&DefVariant(..)) => {}    // OK.

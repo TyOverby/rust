@@ -41,12 +41,12 @@ pub fn maybe_instantiate_inline(ccx: &CrateContext, fn_id: ast::DefId)
         csearch::maybe_get_item_ast(
             ccx.tcx(), fn_id,
             |a,b,c,d| astencode::decode_inlined_item(a, b, c, d));
-    return match csearch_result {
+    match csearch_result {
         csearch::not_found => {
             ccx.external.borrow_mut().insert(fn_id, None);
             fn_id
         }
-        csearch::found(ast::IIItem(item)) => {
+        csearch::found(ast::IIItemRef(item)) => {
             ccx.external.borrow_mut().insert(fn_id, Some(item.id));
             ccx.external_srcs.borrow_mut().insert(item.id, fn_id);
 
@@ -76,12 +76,12 @@ pub fn maybe_instantiate_inline(ccx: &CrateContext, fn_id: ast::DefId)
 
             local_def(item.id)
         }
-        csearch::found(ast::IIForeign(item)) => {
+        csearch::found(ast::IIForeignRef(item)) => {
             ccx.external.borrow_mut().insert(fn_id, Some(item.id));
             ccx.external_srcs.borrow_mut().insert(item.id, fn_id);
             local_def(item.id)
         }
-        csearch::found_parent(parent_id, ast::IIItem(item)) => {
+        csearch::found_parent(parent_id, ast::IIItemRef(item)) => {
             ccx.external.borrow_mut().insert(parent_id, Some(item.id));
             ccx.external_srcs.borrow_mut().insert(item.id, parent_id);
 
@@ -114,7 +114,7 @@ pub fn maybe_instantiate_inline(ccx: &CrateContext, fn_id: ast::DefId)
             ccx.sess().bug("maybe_get_item_ast returned a found_parent \
              with a non-item parent");
         }
-        csearch::found(ast::IIMethod(impl_did, is_provided, mth)) => {
+        csearch::found(ast::IIMethodRef(impl_did, is_provided, mth)) => {
             ccx.external.borrow_mut().insert(fn_id, Some(mth.id));
             ccx.external_srcs.borrow_mut().insert(mth.id, fn_id);
 
@@ -131,9 +131,9 @@ pub fn maybe_instantiate_inline(ccx: &CrateContext, fn_id: ast::DefId)
 
           if num_type_params == 0 {
               let llfn = get_item_val(ccx, mth.id);
-              trans_fn(ccx, mth.decl, mth.body, llfn, None, mth.id, []);
+              trans_fn(ccx, &*mth.decl, &*mth.body, llfn, None, mth.id, []);
           }
           local_def(mth.id)
         }
-    };
+    }
 }

@@ -80,12 +80,12 @@ use std::rc::Rc;
 use std::strbuf::StrBuf;
 use syntax::ast;
 use syntax::ast_map;
-use syntax::ast_util;
 use syntax::ast_util::name_to_dummy_lifetime;
 use syntax::owned_slice::OwnedSlice;
 use syntax::codemap;
 use syntax::parse::token;
 use syntax::print::pprust;
+use syntax::ptr::P;
 use util::ppaux::UserString;
 use util::ppaux::bound_region_to_str;
 use util::ppaux::note_and_explain_region;
@@ -695,7 +695,7 @@ impl<'a> ErrorReporting for InferCtxt<'a> {
                                     = node_inner.expect("expect item fn");
         let taken = lifetimes_in_scope(self.tcx, scope_id);
         let life_giver = LifeGiver::with_taken(taken.as_slice());
-        let rebuilder = Rebuilder::new(self.tcx, *fn_decl, expl_self,
+        let rebuilder = Rebuilder::new(self.tcx, &**fn_decl, expl_self,
                                        generics, same_regions, &life_giver);
         let (fn_decl, expl_self, generics) = rebuilder.rebuild();
         self.give_expl_lifetime_param(&fn_decl, fn_style, ident,
@@ -716,7 +716,7 @@ struct RebuildPathInfo<'a> {
 
 struct Rebuilder<'a> {
     tcx: &'a ty::ctxt,
-    fn_decl: ast::P<ast::FnDecl>,
+    fn_decl: &'a ast::FnDecl,
     expl_self_opt: Option<ast::ExplicitSelf_>,
     generics: &'a ast::Generics,
     same_regions: &'a [SameRegions],
@@ -732,7 +732,7 @@ enum FreshOrKept {
 
 impl<'a> Rebuilder<'a> {
     fn new(tcx: &'a ty::ctxt,
-           fn_decl: ast::P<ast::FnDecl>,
+           fn_decl: &'a ast::FnDecl,
            expl_self_opt: Option<ast::ExplicitSelf_>,
            generics: &'a ast::Generics,
            same_regions: &'a [SameRegions],
@@ -754,7 +754,7 @@ impl<'a> Rebuilder<'a> {
                -> (ast::FnDecl, Option<ast::ExplicitSelf_>, ast::Generics) {
         let mut expl_self_opt = self.expl_self_opt;
         let mut inputs = self.fn_decl.inputs.clone();
-        let mut output = self.fn_decl.output;
+        let mut output = self.fn_decl.output.clone();
         let mut ty_params = self.generics.ty_params.clone();
         let mut kept_lifetimes = HashSet::new();
         for sr in self.same_regions.iter() {
@@ -771,7 +771,7 @@ impl<'a> Rebuilder<'a> {
                                                    &anon_nums, &region_names);
             inputs = self.rebuild_args_ty(inputs.as_slice(), lifetime,
                                           &anon_nums, &region_names);
-            output = self.rebuild_arg_ty_or_output(output, lifetime,
+            output = self.rebuild_arg_ty_or_output(&*output, lifetime,
                                                    &anon_nums, &region_names);
             ty_params = self.rebuild_ty_params(ty_params, lifetime,
                                                &region_names);
@@ -879,7 +879,7 @@ impl<'a> Rebuilder<'a> {
                 ident: ty_param.ident,
                 id: ty_param.id,
                 bounds: bounds,
-                default: ty_param.default,
+                default: ty_param.default.clone(),
                 span: ty_param.span,
                 sized: ty_param.sized,
             }
@@ -978,11 +978,11 @@ impl<'a> Rebuilder<'a> {
                        -> Vec<ast::Arg> {
         let mut new_inputs = Vec::new();
         for arg in inputs.iter() {
-            let new_ty = self.rebuild_arg_ty_or_output(arg.ty, lifetime,
+            let new_ty = self.rebuild_arg_ty_or_output(&*arg.ty, lifetime,
                                                        anon_nums, region_names);
             let possibly_new_arg = ast::Arg {
                 ty: new_ty,
-                pat: arg.pat,
+                pat: arg.pat.clone(),
                 id: arg.id
             };
             new_inputs.push(possibly_new_arg);
@@ -991,36 +991,43 @@ impl<'a> Rebuilder<'a> {
     }
 
     fn rebuild_arg_ty_or_output(&self,
-                                ty: ast::P<ast::Ty>,
+                                ty: &ast::Ty,
                                 lifetime: ast::Lifetime,
                                 anon_nums: &HashSet<uint>,
                                 region_names: &HashSet<ast::Name>)
-                                -> ast::P<ast::Ty> {
-        let mut new_ty = ty;
+                                -> P<ast::Ty> {
+        let mut new_ty = P(ty.clone());
         let mut ty_queue = vec!(ty);
-        let mut cur_ty;
         while !ty_queue.is_empty() {
-            cur_ty = ty_queue.shift().unwrap();
+            let cur_ty = ty_queue.shift().unwrap();
             match cur_ty.node {
-                ast::TyRptr(lt_opt, mut_ty) => {
+                ast::TyRptr(lt_opt, ref mut_ty) => {
                     match lt_opt {
                         Some(lt) => if region_names.contains(&lt.name) {
-                            new_ty = self.rebuild_ty(new_ty, cur_ty,
-                                                     lifetime, None);
+                            let to = ast::Ty {
+                                id: cur_ty.id,
+                                node: ast::TyRptr(Some(lifetime), mut_ty.clone()),
+                                span: cur_ty.span
+                            };
+                            new_ty = self.rebuild_ty(new_ty, P(to));
                         },
                         None => {
                             let anon = self.cur_anon.get();
                             if anon_nums.contains(&anon) {
-                                new_ty = self.rebuild_ty(new_ty, cur_ty,
-                                                         lifetime, None);
+                                let to = ast::Ty {
+                                    id: cur_ty.id,
+                                    node: ast::TyRptr(Some(lifetime), mut_ty.clone()),
+                                    span: cur_ty.span
+                                };
+                                new_ty = self.rebuild_ty(new_ty, P(to));
                                 self.track_anon(anon);
                             }
                             self.inc_and_offset_cur_anon(1);
                         }
                     }
-                    ty_queue.push(mut_ty.ty);
+                    ty_queue.push(&*mut_ty.ty);
                 }
-                ast::TyPath(ref path, _, id) => {
+                ast::TyPath(ref path, ref bounds, id) => {
                     let a_def = match self.tcx.def_map.borrow().find(&id) {
                         None => self.tcx.sess.fatal(format!("unbound path {}",
                                                     pprust::path_to_str(path))),
@@ -1028,10 +1035,7 @@ impl<'a> Rebuilder<'a> {
                     };
                     match a_def {
                         ast::DefTy(did) | ast::DefStruct(did) => {
-                            let ty::ty_param_bounds_and_ty {
-                                generics: generics,
-                                ty: _
-                            } = ty::lookup_item_type(self.tcx, did);
+                            let generics = ty::lookup_item_type(self.tcx, did).generics;
 
                             let expected = generics.region_param_defs().len();
                             let lifetimes = &path.segments.last()
@@ -1061,84 +1065,76 @@ impl<'a> Rebuilder<'a> {
                                 anon_nums: anon_nums,
                                 region_names: region_names
                             };
-                            new_ty = self.rebuild_ty(new_ty, cur_ty,
-                                                     lifetime,
-                                                     Some(rebuild_info));
+                            let new_path = self.rebuild_path(rebuild_info, lifetime);
+                            let to = ast::Ty {
+                                id: cur_ty.id,
+                                node: ast::TyPath(new_path, bounds.clone(), id),
+                                span: cur_ty.span
+                            };
+                            new_ty = self.rebuild_ty(new_ty, P(to));
                         }
                         _ => ()
                     }
 
                 }
-                _ => ty_queue.push_all_move(ast_util::get_inner_tys(cur_ty))
+
+                ast::TyPtr(ref mut_ty) => {
+                    ty_queue.push(&*mut_ty.ty);
+                }
+                ast::TyBox(ref ty) |
+                ast::TyVec(ref ty) |
+                ast::TyUniq(ref ty) |
+                ast::TyFixedLengthVec(ref ty, _) => {
+                    ty_queue.push(&**ty);
+                }
+                ast::TyTup(ref tys) => ty_queue.extend(tys.iter().map(|ty| &**ty)),
+                _ => {}
             }
         }
         new_ty
     }
 
     fn rebuild_ty(&self,
-                  from: ast::P<ast::Ty>,
-                  to: ast::P<ast::Ty>,
-                  lifetime: ast::Lifetime,
-                  rebuild_path_info: Option<RebuildPathInfo>)
-                  -> ast::P<ast::Ty> {
+                  from: P<ast::Ty>,
+                  to: P<ast::Ty>)
+                  -> P<ast::Ty> {
 
-        fn build_to(from: ast::P<ast::Ty>,
-                    to: ast::P<ast::Ty>)
-                    -> ast::P<ast::Ty> {
-            if from.id == to.id {
-                return to;
+        fn build_to(from: P<ast::Ty>,
+                    to: &mut Option<P<ast::Ty>>)
+                    -> P<ast::Ty> {
+            if from.id == to.as_ref().map_or(ast::DUMMY_NODE_ID, |ty| ty.id) {
+                return to.take().expect("`to` type found more than once during rebuild");
             }
-            let new_node = match from.node {
-                ast::TyRptr(ref lifetime, ref mut_ty) => {
-                    let new_mut_ty = ast::MutTy {
-                        ty: build_to(mut_ty.ty, to),
-                        mutbl: mut_ty.mutbl
-                    };
-                    ast::TyRptr(*lifetime, new_mut_ty)
-                }
-                ast::TyPtr(ref mut_ty) => {
-                    let new_mut_ty = ast::MutTy {
-                        ty: build_to(mut_ty.ty, to),
-                        mutbl: mut_ty.mutbl
-                    };
-                    ast::TyPtr(new_mut_ty)
-                }
-                ast::TyBox(ref ty) => ast::TyBox(build_to(*ty, to)),
-                ast::TyVec(ref ty) => ast::TyVec(build_to(*ty, to)),
-                ast::TyUniq(ref ty) => ast::TyUniq(build_to(*ty, to)),
-                ast::TyFixedLengthVec(ref ty, ref e) => {
-                    ast::TyFixedLengthVec(build_to(*ty, to), *e)
-                }
-                ast::TyTup(ref tys) => {
-                    let mut new_tys = Vec::new();
-                    for ty in tys.iter() {
-                        new_tys.push(build_to(*ty, to));
+            from.map(|ast::Ty {id, node, span}| {
+                let new_node = match node {
+                    ast::TyRptr(lifetime, mut_ty) => {
+                        ast::TyRptr(lifetime, ast::MutTy {
+                            mutbl: mut_ty.mutbl,
+                            ty: build_to(mut_ty.ty, to),
+                        })
                     }
-                    ast::TyTup(new_tys)
-                }
-                ref other => other.clone()
-            };
-            @ast::Ty { id: from.id, node: new_node, span: from.span }
+                    ast::TyPtr(mut_ty) => {
+                        ast::TyPtr(ast::MutTy {
+                            mutbl: mut_ty.mutbl,
+                            ty: build_to(mut_ty.ty, to),
+                        })
+                    }
+                    ast::TyBox(ty) => ast::TyBox(build_to(ty, to)),
+                    ast::TyVec(ty) => ast::TyVec(build_to(ty, to)),
+                    ast::TyUniq(ty) => ast::TyUniq(build_to(ty, to)),
+                    ast::TyFixedLengthVec(ty, e) => {
+                        ast::TyFixedLengthVec(build_to(ty, to), e)
+                    }
+                    ast::TyTup(tys) => {
+                        ast::TyTup(tys.move_iter().map(|ty| build_to(ty, to)).collect())
+                    }
+                    other => other
+                };
+                ast::Ty { id: id, node: new_node, span: span }
+            })
         }
 
-        let new_ty_node = match to.node {
-            ast::TyRptr(_, mut_ty) => ast::TyRptr(Some(lifetime), mut_ty),
-            ast::TyPath(_, ref bounds, id) => {
-                let rebuild_info = match rebuild_path_info {
-                    Some(ri) => ri,
-                    None => fail!("expect index_opt in rebuild_ty/ast::TyPath")
-                };
-                let new_path = self.rebuild_path(rebuild_info, lifetime);
-                ast::TyPath(new_path, bounds.clone(), id)
-            }
-            _ => fail!("expect ast::TyRptr or ast::TyPath")
-        };
-        let new_ty = @ast::Ty {
-            id: to.id,
-            node: new_ty_node,
-            span: to.span
-        };
-        build_to(from, new_ty)
+        build_to(from, &mut Some(to))
     }
 
     fn rebuild_path(&self,
@@ -1178,8 +1174,8 @@ impl<'a> Rebuilder<'a> {
                 }
             }
         }
-        let new_types = last_seg.types.map(|&t| {
-            self.rebuild_arg_ty_or_output(t, lifetime, anon_nums, region_names)
+        let new_types = last_seg.types.map(|t| {
+            self.rebuild_arg_ty_or_output(&**t, lifetime, anon_nums, region_names)
         });
         let new_seg = ast::PathSegment {
             identifier: last_seg.identifier,
