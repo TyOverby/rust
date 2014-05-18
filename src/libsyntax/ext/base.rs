@@ -18,6 +18,7 @@ use parse;
 use parse::token;
 use parse::token::{InternedString, intern, str_to_ident};
 use util::small_vector::SmallVector;
+use ptr::P;
 
 use collections::HashMap;
 
@@ -35,10 +36,10 @@ pub struct MacroDef {
 }
 
 pub type ItemDecorator =
-    fn(&mut ExtCtxt, Span, @ast::MetaItem, @ast::Item, |@ast::Item|);
+    fn(&mut ExtCtxt, Span, &ast::MetaItem, &ast::Item, |P<ast::Item>|);
 
 pub type ItemModifier =
-    fn(&mut ExtCtxt, Span, @ast::MetaItem, @ast::Item) -> @ast::Item;
+    fn(&mut ExtCtxt, Span, &ast::MetaItem, P<ast::Item>) -> P<ast::Item>;
 
 pub struct BasicMacroExpander {
     pub expander: MacroExpanderFn,
@@ -103,15 +104,15 @@ pub type MacroCrateRegistrationFun =
 /// just into the compiler's internal macro table, for `make_def`).
 pub trait MacResult {
     /// Define a new macro.
-    fn make_def(&self) -> Option<MacroDef> {
-        None
+    fn make_def(~self) -> Result<MacroDef, Box<MacResult>> {
+        Err(self as Box<MacResult>)
     }
     /// Create an expression.
-    fn make_expr(&self) -> Option<@ast::Expr> {
+    fn make_expr(~self) -> Option<P<ast::Expr>> {
         None
     }
     /// Create zero or more items.
-    fn make_items(&self) -> Option<SmallVector<@ast::Item>> {
+    fn make_items(~self) -> Option<SmallVector<P<ast::Item>>> {
         None
     }
 
@@ -119,45 +120,46 @@ pub trait MacResult {
     ///
     /// By default this attempts to create an expression statement,
     /// returning None if that fails.
-    fn make_stmt(&self) -> Option<@ast::Stmt> {
+    fn make_stmt(~self) -> Option<P<ast::Stmt>> {
         self.make_expr()
-            .map(|e| @codemap::respan(e.span, ast::StmtExpr(e, ast::DUMMY_NODE_ID)))
+            .map(|e| P(codemap::respan(e.span, ast::StmtExpr(e, ast::DUMMY_NODE_ID))))
     }
 }
 
 /// A convenience type for macros that return a single expression.
 pub struct MacExpr {
-    e: @ast::Expr
+    e: P<ast::Expr>
 }
 impl MacExpr {
-    pub fn new(e: @ast::Expr) -> Box<MacResult> {
+    pub fn new(e: P<ast::Expr>) -> Box<MacResult> {
         box MacExpr { e: e } as Box<MacResult>
     }
 }
 impl MacResult for MacExpr {
-    fn make_expr(&self) -> Option<@ast::Expr> {
+    fn make_expr(~self) -> Option<P<ast::Expr>> {
         Some(self.e)
     }
 }
+
 /// A convenience type for macros that return a single item.
 pub struct MacItem {
-    i: @ast::Item
+    i: P<ast::Item>
 }
 impl MacItem {
-    pub fn new(i: @ast::Item) -> Box<MacResult> {
+    pub fn new(i: P<ast::Item>) -> Box<MacResult> {
         box MacItem { i: i } as Box<MacResult>
     }
 }
 impl MacResult for MacItem {
-    fn make_items(&self) -> Option<SmallVector<@ast::Item>> {
+    fn make_items(~self) -> Option<SmallVector<P<ast::Item>>> {
         Some(SmallVector::one(self.i))
     }
-    fn make_stmt(&self) -> Option<@ast::Stmt> {
-        Some(@codemap::respan(
+    fn make_stmt(~self) -> Option<P<ast::Stmt>> {
+        Some(P(codemap::respan(
             self.i.span,
             ast::StmtDecl(
-                @codemap::respan(self.i.span, ast::DeclItem(self.i)),
-                ast::DUMMY_NODE_ID)))
+                P(codemap::respan(self.i.span, ast::DeclItem(self.i))),
+                ast::DUMMY_NODE_ID))))
     }
 }
 
@@ -187,30 +189,30 @@ impl DummyResult {
     }
 
     /// A plain dummy expression.
-    pub fn raw_expr(sp: Span) -> @ast::Expr {
-        @ast::Expr {
+    pub fn raw_expr(sp: Span) -> P<ast::Expr> {
+        P(ast::Expr {
             id: ast::DUMMY_NODE_ID,
-            node: ast::ExprLit(@codemap::respan(sp, ast::LitNil)),
+            node: ast::ExprLit(P(codemap::respan(sp, ast::LitNil))),
             span: sp,
-        }
+        })
     }
 }
 
 impl MacResult for DummyResult {
-    fn make_expr(&self) -> Option<@ast::Expr> {
+    fn make_expr(~self) -> Option<P<ast::Expr>> {
         Some(DummyResult::raw_expr(self.span))
     }
-    fn make_items(&self) -> Option<SmallVector<@ast::Item>> {
+    fn make_items(~self) -> Option<SmallVector<P<ast::Item>>> {
         if self.expr_only {
             None
         } else {
             Some(SmallVector::zero())
         }
     }
-    fn make_stmt(&self) -> Option<@ast::Stmt> {
-        Some(@codemap::respan(self.span,
-                              ast::StmtExpr(DummyResult::raw_expr(self.span),
-                                            ast::DUMMY_NODE_ID)))
+    fn make_stmt(~self) -> Option<P<ast::Stmt>> {
+        Some(P(codemap::respan(self.span,
+                               ast::StmtExpr(DummyResult::raw_expr(self.span),
+                                             ast::DUMMY_NODE_ID))))
     }
 }
 
@@ -398,7 +400,7 @@ impl<'a> ExtCtxt<'a> {
         }
     }
 
-    pub fn expand_expr(&mut self, mut e: @ast::Expr) -> @ast::Expr {
+    pub fn expand_expr(&mut self, mut e: P<ast::Expr>) -> P<ast::Expr> {
         loop {
             match e.node {
                 ast::ExprMac(..) => {
@@ -509,12 +511,12 @@ impl<'a> ExtCtxt<'a> {
 /// Extract a string literal from the macro expanded version of `expr`,
 /// emitting `err_msg` if `expr` is not a string literal. This does not stop
 /// compilation on error, merely emits a non-fatal error and returns None.
-pub fn expr_to_str(cx: &mut ExtCtxt, expr: @ast::Expr, err_msg: &str)
+pub fn expr_to_str(cx: &mut ExtCtxt, expr: P<ast::Expr>, err_msg: &str)
                    -> Option<(InternedString, ast::StrStyle)> {
     // we want to be able to handle e.g. concat("foo", "bar")
     let expr = cx.expand_expr(expr);
     match expr.node {
-        ast::ExprLit(l) => match l.node {
+        ast::ExprLit(ref l) => match l.node {
             ast::LitStr(ref s, style) => return Some(((*s).clone(), style)),
             _ => cx.span_err(l.span, err_msg)
         },
@@ -562,7 +564,7 @@ pub fn get_single_str_from_tts(cx: &ExtCtxt,
 /// parsing error, emit a non-fatal error and return None.
 pub fn get_exprs_from_tts(cx: &mut ExtCtxt,
                           sp: Span,
-                          tts: &[ast::TokenTree]) -> Option<Vec<@ast::Expr> > {
+                          tts: &[ast::TokenTree]) -> Option<Vec<P<ast::Expr>>> {
     let mut p = parse::new_parser_from_tts(cx.parse_sess(),
                                            cx.cfg(),
                                            tts.iter()

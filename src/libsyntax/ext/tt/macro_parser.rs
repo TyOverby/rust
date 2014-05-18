@@ -20,6 +20,7 @@ use parse::attr::ParserAttr;
 use parse::parser::{LifetimeAndTypesWithoutColons, Parser};
 use parse::token::{Token, EOF, Nonterminal};
 use parse::token;
+use ptr::P;
 
 use std::rc::Rc;
 use collections::HashMap;
@@ -450,7 +451,7 @@ pub fn parse_nt(p: &mut Parser, name: &str) -> Nonterminal {
       "meta" => token::NtMeta(p.parse_meta_item()),
       "tt" => {
         p.quote_depth += 1u; //but in theory, non-quoted tts might be useful
-        let res = token::NtTT(@p.parse_token_tree());
+        let res = token::NtTT(P(p.parse_token_tree()));
         p.quote_depth -= 1u;
         res
       }

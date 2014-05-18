@@ -16,6 +16,7 @@ use codemap::Span;
 use owned_slice::OwnedSlice;
 use parse::token;
 use print::pprust;
+use ptr::P;
 use visit::Visitor;
 use visit;
 
@@ -128,7 +129,7 @@ pub fn unop_to_str(op: UnOp) -> &'static str {
     }
 }
 
-pub fn is_path(e: @Expr) -> bool {
+pub fn is_path(e: P<Expr>) -> bool {
     return match e.node { ExprPath(_) => true, _ => false };
 }
 
@@ -208,21 +209,6 @@ pub fn float_ty_to_str(t: FloatTy) -> StrBuf {
     }
 }
 
-pub fn is_call_expr(e: @Expr) -> bool {
-    match e.node { ExprCall(..) => true, _ => false }
-}
-
-pub fn block_from_expr(e: @Expr) -> P<Block> {
-    P(Block {
-        view_items: Vec::new(),
-        stmts: Vec::new(),
-        expr: Some(e),
-        id: e.id,
-        rules: DefaultBlock,
-        span: e.span
-    })
-}
-
 pub fn ident_to_path(s: Span, identifier: Ident) -> Path {
     ast::Path {
         span: s,
@@ -237,31 +223,18 @@ pub fn ident_to_path(s: Span, identifier: Ident) -> Path {
     }
 }
 
-pub fn ident_to_pat(id: NodeId, s: Span, i: Ident) -> @Pat {
-    @ast::Pat { id: id,
-                node: PatIdent(BindByValue(MutImmutable), ident_to_path(s, i), None),
-                span: s }
+pub fn ident_to_pat(id: NodeId, s: Span, i: Ident) -> P<Pat> {
+    P(Pat {
+        id: id,
+        node: PatIdent(BindByValue(MutImmutable), ident_to_path(s, i), None),
+        span: s
+    })
 }
 
 pub fn name_to_dummy_lifetime(name: Name) -> Lifetime {
     Lifetime { id: DUMMY_NODE_ID,
                span: codemap::DUMMY_SP,
                name: name }
-}
-
-pub fn is_unguarded(a: &Arm) -> bool {
-    match a.guard {
-      None => true,
-      _    => false
-    }
-}
-
-pub fn unguarded_pat(a: &Arm) -> Option<Vec<@Pat> > {
-    if is_unguarded(a) {
-        Some(/* FIXME (#2543) */ a.pats.clone())
-    } else {
-        None
-    }
 }
 
 /// Generate a "pretty" name for an `impl` from its type and trait.
@@ -281,7 +254,7 @@ pub fn impl_pretty_name(trait_ref: &Option<TraitRef>, ty: &Ty) -> Ident {
     token::gensym_ident(pretty.as_slice())
 }
 
-pub fn public_methods(ms: Vec<@Method> ) -> Vec<@Method> {
+pub fn public_methods(ms: Vec<P<Method>>) -> Vec<P<Method>> {
     ms.move_iter().filter(|m| {
         match m.vis {
             Public => true,
@@ -300,7 +273,7 @@ pub fn trait_method_to_ty_method(method: &TraitMethod) -> TypeMethod {
                 ident: m.ident,
                 attrs: m.attrs.clone(),
                 fn_style: m.fn_style,
-                decl: m.decl,
+                decl: m.decl.clone(),
                 generics: m.generics.clone(),
                 explicit_self: m.explicit_self,
                 id: m.id,
@@ -308,19 +281,6 @@ pub fn trait_method_to_ty_method(method: &TraitMethod) -> TypeMethod {
             }
         }
     }
-}
-
-pub fn split_trait_methods(trait_methods: &[TraitMethod])
-    -> (Vec<TypeMethod> , Vec<@Method> ) {
-    let mut reqd = Vec::new();
-    let mut provd = Vec::new();
-    for trt_method in trait_methods.iter() {
-        match *trt_method {
-            Required(ref tm) => reqd.push((*tm).clone()),
-            Provided(m) => provd.push(m)
-        }
-    };
-    (reqd, provd)
 }
 
 pub fn struct_field_visibility(field: ast::StructField) -> Visibility {
@@ -636,33 +596,26 @@ pub fn compute_id_range_for_fn_body(fk: &visit::FnKind,
     visitor.result.get()
 }
 
-pub fn is_item_impl(item: @ast::Item) -> bool {
-    match item.node {
-        ItemImpl(..) => true,
-        _            => false
-    }
-}
-
 pub fn walk_pat(pat: &Pat, it: |&Pat| -> bool) -> bool {
     if !it(pat) {
         return false;
     }
 
     match pat.node {
-        PatIdent(_, _, Some(p)) => walk_pat(p, it),
+        PatIdent(_, _, Some(ref p)) => walk_pat(&**p, it),
         PatStruct(_, ref fields, _) => {
-            fields.iter().advance(|f| walk_pat(f.pat, |p| it(p)))
+            fields.iter().advance(|f| walk_pat(&*f.pat, |p| it(p)))
         }
         PatEnum(_, Some(ref s)) | PatTup(ref s) => {
-            s.iter().advance(|&p| walk_pat(p, |p| it(p)))
+            s.iter().advance(|p| walk_pat(&**p, |p| it(p)))
         }
-        PatUniq(s) | PatRegion(s) => {
-            walk_pat(s, it)
+        PatUniq(ref s) | PatRegion(ref s) => {
+            walk_pat(&**s, it)
         }
         PatVec(ref before, ref slice, ref after) => {
-            before.iter().advance(|&p| walk_pat(p, |p| it(p))) &&
-                slice.iter().advance(|&p| walk_pat(p, |p| it(p))) &&
-                after.iter().advance(|&p| walk_pat(p, |p| it(p)))
+            before.iter().advance(|p| walk_pat(&**p, |p| it(p))) &&
+                slice.iter().advance(|p| walk_pat(&**p, |p| it(p))) &&
+                after.iter().advance(|p| walk_pat(&**p, |p| it(p)))
         }
         PatWild | PatWildMulti | PatLit(_) | PatRange(_, _) | PatIdent(_, _, _) |
         PatEnum(_, _) => {
@@ -710,7 +663,7 @@ pub fn struct_def_is_tuple_like(struct_def: &ast::StructDef) -> bool {
 
 /// Returns true if the given pattern consists solely of an identifier
 /// and false otherwise.
-pub fn pat_is_ident(pat: @ast::Pat) -> bool {
+pub fn pat_is_ident(pat: P<ast::Pat>) -> bool {
     match pat.node {
         ast::PatIdent(..) => true,
         _ => false,
@@ -745,27 +698,12 @@ pub fn segments_name_eq(a : &[ast::PathSegment], b : &[ast::PathSegment]) -> boo
 }
 
 // Returns true if this literal is a string and false otherwise.
-pub fn lit_is_str(lit: @Lit) -> bool {
+pub fn lit_is_str(lit: &Lit) -> bool {
     match lit.node {
         LitStr(..) => true,
         _ => false,
     }
 }
-
-pub fn get_inner_tys(ty: P<Ty>) -> Vec<P<Ty>> {
-    match ty.node {
-        ast::TyRptr(_, mut_ty) | ast::TyPtr(mut_ty) => {
-            vec!(mut_ty.ty)
-        }
-        ast::TyBox(ty)
-        | ast::TyVec(ty)
-        | ast::TyUniq(ty)
-        | ast::TyFixedLengthVec(ty, _) => vec!(ty),
-        ast::TyTup(ref tys) => tys.clone(),
-        _ => Vec::new()
-    }
-}
-
 
 #[cfg(test)]
 mod test {

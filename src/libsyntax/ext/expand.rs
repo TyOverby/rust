@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use ast::{P, Block, Crate, DeclLocal, ExprMac};
+use ast::{Block, Crate, DeclLocal, ExprMac};
 use ast::{Local, Ident, MacInvocTT};
 use ast::{ItemMac, Mrk, Stmt, StmtDecl, StmtMac, StmtExpr, StmtSemi};
 use ast::TokenTree;
@@ -25,34 +25,35 @@ use fold::*;
 use parse;
 use parse::token::{fresh_mark, fresh_name, intern};
 use parse::token;
+use ptr::P;
+use util::small_vector::SmallVector;
 use visit;
 use visit::Visitor;
-use util::small_vector::SmallVector;
 
 use std::mem;
 use std::os;
 use std::unstable::dynamic_lib::DynamicLibrary;
 
-pub fn expand_expr(e: @ast::Expr, fld: &mut MacroExpander) -> @ast::Expr {
-    match e.node {
+pub fn expand_expr(e: P<ast::Expr>, fld: &mut MacroExpander) -> P<ast::Expr> {
+    e.and_then(|ast::Expr {id, node, span}| match node {
         // expr_mac should really be expr_ext or something; it's the
         // entry-point for all syntax extensions.
-        ExprMac(ref mac) => {
-            match (*mac).node {
+        ExprMac(mac) => {
+            match mac.node {
                 // it would almost certainly be cleaner to pass the whole
                 // macro invocation in, rather than pulling it apart and
                 // marking the tts and the ctxt separately. This also goes
                 // for the other three macro invocation chunks of code
                 // in this file.
                 // Token-tree macros:
-                MacInvocTT(ref pth, ref tts, _) => {
+                MacInvocTT(pth, tts, _) => {
                     if pth.segments.len() > 1u {
                         fld.cx.span_err(
                             pth.span,
                             format!("expected macro name without module \
                                   separators"));
                         // let compilation continue
-                        return DummyResult::raw_expr(e.span);
+                        return DummyResult::raw_expr(span);
                     }
                     let extname = pth.segments.get(0).identifier;
                     let extnamestr = token::get_ident(extname);
@@ -65,11 +66,11 @@ pub fn expand_expr(e: @ast::Expr, fld: &mut MacroExpander) -> @ast::Expr {
                                         extnamestr.get()));
 
                             // let compilation continue
-                            return DummyResult::raw_expr(e.span);
+                            return DummyResult::raw_expr(span);
                         }
                         Some(&NormalTT(ref expandfun, exp_span)) => {
                             fld.cx.bt_push(ExpnInfo {
-                                call_site: e.span,
+                                call_site: span,
                                 callee: NameAndSpan {
                                     name: extnamestr.get().to_strbuf(),
                                     format: MacroBang,
@@ -98,7 +99,7 @@ pub fn expand_expr(e: @ast::Expr, fld: &mut MacroExpander) -> @ast::Expr {
                                             extnamestr.get()
                                         )
                                     );
-                                    return DummyResult::raw_expr(e.span);
+                                    return DummyResult::raw_expr(span);
                                 }
                             };
 
@@ -111,7 +112,7 @@ pub fn expand_expr(e: @ast::Expr, fld: &mut MacroExpander) -> @ast::Expr {
                                 format!("'{}' is not a tt-style macro",
                                         extnamestr.get())
                             );
-                            return DummyResult::raw_expr(e.span);
+                            return DummyResult::raw_expr(span);
                         }
                     };
 
@@ -123,11 +124,11 @@ pub fn expand_expr(e: @ast::Expr, fld: &mut MacroExpander) -> @ast::Expr {
                         fld.fold_expr(marked_after).node.clone();
                     fld.cx.bt_pop();
 
-                    @ast::Expr {
+                    P(ast::Expr {
                         id: ast::DUMMY_NODE_ID,
                         node: fully_expanded,
-                        span: e.span,
-                    }
+                        span: span,
+                    })
                 }
             }
         }
@@ -140,8 +141,6 @@ pub fn expand_expr(e: @ast::Expr, fld: &mut MacroExpander) -> @ast::Expr {
             // NB: we don't fold pats yet. Curious.
             let src_expr = fld.fold_expr(src_expr).clone();
             let (src_loop_block, opt_ident) = expand_loop_block(src_loop_block, opt_ident, fld);
-
-            let span = e.span;
 
             // to:
             //
@@ -203,11 +202,17 @@ pub fn expand_expr(e: @ast::Expr, fld: &mut MacroExpander) -> @ast::Expr {
 
         ast::ExprLoop(loop_block, opt_ident) => {
             let (loop_block, opt_ident) = expand_loop_block(loop_block, opt_ident, fld);
-            fld.cx.expr(e.span, ast::ExprLoop(loop_block, opt_ident))
+            fld.cx.expr(span, ast::ExprLoop(loop_block, opt_ident))
         }
 
-        _ => noop_fold_expr(e, fld)
-    }
+        _ => {
+            P(noop_fold_expr(ast::Expr {
+                id: id,
+                node: node,
+                span: span
+            }, fld))
+        }
+    })
 }
 
 // Rename loop label and expand its loop body
@@ -227,8 +232,8 @@ fn expand_loop_block(loop_block: P<Block>,
             // syntax context otherwise an unrelated `break` or `continue` in
             // the same context will pick that up in the deferred renaming pass
             // and be renamed incorrectly.
-            let mut rename_list = vec!(rename);
-            let mut rename_fld = renames_to_fold(&mut rename_list);
+            let rename_list = [rename];
+            let mut rename_fld = renames_to_fold(rename_list);
             let renamed_ident = rename_fld.fold_ident(label);
 
             // The rename *must* be added to the enclosed syntax context for
@@ -257,8 +262,8 @@ macro_rules! with_exts_frame (
 )
 
 // When we enter a module, record it, for the sake of `module!`
-pub fn expand_item(it: @ast::Item, fld: &mut MacroExpander)
-                   -> SmallVector<@ast::Item> {
+pub fn expand_item(it: P<ast::Item>, fld: &mut MacroExpander)
+                   -> SmallVector<P<ast::Item>> {
     let it = expand_item_modifiers(it, fld);
 
     let mut decorator_items = SmallVector::zero();
@@ -279,8 +284,8 @@ pub fn expand_item(it: @ast::Item, fld: &mut MacroExpander)
 
                 // we'd ideally decorator_items.push_all(expand_item(item, fld)),
                 // but that double-mut-borrows fld
-                let mut items: SmallVector<@ast::Item> = SmallVector::zero();
-                dec_fn(fld.cx, attr.span, attr.node.value, it,
+                let mut items: SmallVector<P<ast::Item>> = SmallVector::zero();
+                dec_fn(fld.cx, attr.span, &*attr.node.value, &*it,
                        |item| items.push(item));
                 decorator_items.extend(items.move_iter()
                     .flat_map(|item| expand_item(item, fld).move_iter()));
@@ -303,11 +308,10 @@ pub fn expand_item(it: @ast::Item, fld: &mut MacroExpander)
             result
         },
         _ => {
-            let it = @ast::Item {
+            let it = P(ast::Item {
                 attrs: new_attrs,
                 ..(*it).clone()
-
-            };
+            });
             noop_fold_item(it, fld)
         }
     };
@@ -316,8 +320,8 @@ pub fn expand_item(it: @ast::Item, fld: &mut MacroExpander)
     new_items
 }
 
-fn expand_item_modifiers(mut it: @ast::Item, fld: &mut MacroExpander)
-                         -> @ast::Item {
+fn expand_item_modifiers(mut it: P<ast::Item>, fld: &mut MacroExpander)
+                         -> P<ast::Item> {
     let (modifiers, attrs) = it.attrs.partitioned(|attr| {
         match fld.extsbox.find(&intern(attr.name().get())) {
             Some(&ItemModifier(_)) => true,
@@ -325,10 +329,10 @@ fn expand_item_modifiers(mut it: @ast::Item, fld: &mut MacroExpander)
         }
     });
 
-    it = @ast::Item {
+    it = P(ast::Item {
         attrs: attrs,
         ..(*it).clone()
-    };
+    });
 
     if modifiers.is_empty() {
         return it;
@@ -347,7 +351,7 @@ fn expand_item_modifiers(mut it: @ast::Item, fld: &mut MacroExpander)
                         span: None,
                     }
                 });
-                it = dec_fn(fld.cx, attr.span, attr.node.value, it);
+                it = dec_fn(fld.cx, attr.span, &*attr.node.value, it);
                 fld.cx.bt_pop();
             }
             _ => unreachable!()
@@ -365,24 +369,23 @@ pub fn contains_macro_escape(attrs: &[ast::Attribute]) -> bool {
 
 // Support for item-position macro invocations, exactly the same
 // logic as for expression-position macro invocations.
-pub fn expand_item_mac(it: @ast::Item, fld: &mut MacroExpander)
-                       -> SmallVector<@ast::Item> {
-    let (pth, tts) = match it.node {
+pub fn expand_item_mac(it: P<ast::Item>, fld: &mut MacroExpander)
+                       -> SmallVector<P<ast::Item>> {
+    let (extname, path_span, tts) = match it.node {
         ItemMac(codemap::Spanned {
             node: MacInvocTT(ref pth, ref tts, _),
             ..
         }) => {
-            (pth, (*tts).clone())
+            (pth.segments.get(0).identifier, pth.span, (*tts).clone())
         }
         _ => fld.cx.span_bug(it.span, "invalid item macro invocation")
     };
 
-    let extname = pth.segments.get(0).identifier;
     let extnamestr = token::get_ident(extname);
     let fm = fresh_mark();
     let expanded = match fld.extsbox.find(&extname.name) {
         None => {
-            fld.cx.span_err(pth.span,
+            fld.cx.span_err(path_span,
                             format!("macro undefined: '{}!'",
                                     extnamestr));
             // let compilation continue
@@ -391,7 +394,7 @@ pub fn expand_item_mac(it: @ast::Item, fld: &mut MacroExpander)
 
         Some(&NormalTT(ref expander, span)) => {
             if it.ident.name != parse::token::special_idents::invalid.name {
-                fld.cx.span_err(pth.span,
+                fld.cx.span_err(path_span,
                                 format!("macro {}! expects no ident argument, \
                                         given '{}'",
                                         extnamestr,
@@ -412,7 +415,7 @@ pub fn expand_item_mac(it: @ast::Item, fld: &mut MacroExpander)
         }
         Some(&IdentTT(ref expander, span)) => {
             if it.ident.name == parse::token::special_idents::invalid.name {
-                fld.cx.span_err(pth.span,
+                fld.cx.span_err(path_span,
                                 format!("macro {}! expects an ident argument",
                                         extnamestr.get()));
                 return SmallVector::zero();
@@ -438,7 +441,7 @@ pub fn expand_item_mac(it: @ast::Item, fld: &mut MacroExpander)
     };
 
     let items = match expanded.make_def() {
-        Some(MacroDef { name, ext }) => {
+        Ok(MacroDef { name, ext }) => {
             // yikes... no idea how to apply the mark to this. I'm afraid
             // we're going to have to wait-and-see on this one.
             fld.extsbox.insert(intern(name.as_slice()), ext);
@@ -448,7 +451,7 @@ pub fn expand_item_mac(it: @ast::Item, fld: &mut MacroExpander)
                 SmallVector::zero()
             }
         }
-        None => {
+        Err(expanded) => {
             match expanded.make_items() {
                 Some(items) => {
                     items.move_iter()
@@ -457,20 +460,20 @@ pub fn expand_item_mac(it: @ast::Item, fld: &mut MacroExpander)
                         .collect()
                 }
                 None => {
-                    fld.cx.span_err(pth.span,
+                    fld.cx.span_err(path_span,
                                     format!("expr macro in item position: {}",
                                             extnamestr.get()));
-                    return SmallVector::zero();
+                    SmallVector::zero()
                 }
             }
         }
     };
     fld.cx.bt_pop();
-    return items;
+    items
 }
 
 // load macros from syntax-phase crates
-pub fn expand_view_item(vi: &ast::ViewItem,
+pub fn expand_view_item(vi: ast::ViewItem,
                         fld: &mut MacroExpander)
                         -> ast::ViewItem {
     match vi.node {
@@ -483,7 +486,7 @@ pub fn expand_view_item(vi: &ast::ViewItem,
             });
 
             if should_load {
-                load_extern_macros(vi, fld);
+                load_extern_macros(&vi, fld);
             }
         }
         ast::ViewItemUse(_) => {}
@@ -557,18 +560,17 @@ fn load_extern_macros(krate: &ast::ViewItem, fld: &mut MacroExpander) {
 }
 
 // expand a stmt
-pub fn expand_stmt(s: &Stmt, fld: &mut MacroExpander) -> SmallVector<@Stmt> {
+pub fn expand_stmt(s: P<Stmt>, fld: &mut MacroExpander) -> SmallVector<P<Stmt>> {
     // why the copying here and not in expand_expr?
     // looks like classic changed-in-only-one-place
-    let (pth, tts, semi) = match s.node {
-        StmtMac(ref mac, semi) => {
-            match mac.node {
-                MacInvocTT(ref pth, ref tts, _) => {
-                    (pth, (*tts).clone(), semi)
-                }
-            }
-        }
-        _ => return expand_non_macro_stmt(s, fld)
+    let stmt_span = s.span;
+    let (mac, semi) = s.and_then(|stmt| match stmt.node {
+        StmtMac(mac, semi) => (Ok(mac), semi),
+        _ => (Err(stmt), false)
+    });
+    let (pth, tts) = match mac {
+        Ok(Spanned {node: MacInvocTT(pth, tts, _), ..}) => (pth, tts),
+        Err(stmt) => return expand_non_macro_stmt(stmt, fld)
     };
     if pth.segments.len() > 1u {
         fld.cx.span_err(pth.span, "expected macro name without module separators");
@@ -584,7 +586,7 @@ pub fn expand_stmt(s: &Stmt, fld: &mut MacroExpander) -> SmallVector<@Stmt> {
 
         Some(&NormalTT(ref expandfun, exp_span)) => {
             fld.cx.bt_push(ExpnInfo {
-                call_site: s.span,
+                call_site: stmt_span,
                 callee: NameAndSpan {
                     name: extnamestr.get().to_strbuf(),
                     format: MacroBang,
@@ -628,43 +630,32 @@ pub fn expand_stmt(s: &Stmt, fld: &mut MacroExpander) -> SmallVector<@Stmt> {
         return SmallVector::zero();
     }
     fld.cx.bt_pop();
-    let fully_expanded: SmallVector<@Stmt> = fully_expanded.move_iter()
-            .map(|s| @Spanned { span: s.span, node: s.node.clone() })
-            .collect();
 
-    fully_expanded.move_iter().map(|s| {
-        match s.node {
-            StmtExpr(e, stmt_id) if semi => {
-                @Spanned {
-                    span: s.span,
-                    node: StmtSemi(e, stmt_id)
-                }
+    if semi {
+        fully_expanded.move_iter().map(|s| s.map(|Spanned {node, span}| {
+            Spanned {
+                node: match node {
+                    StmtExpr(e, stmt_id) => StmtSemi(e, stmt_id),
+                    _ => node /* might already have a semi */
+                },
+                span: span
             }
-            _ => s /* might already have a semi */
-        }
-    }).collect()
+        })).collect()
+    } else {
+        fully_expanded
+    }
 }
 
 // expand a non-macro stmt. this is essentially the fallthrough for
 // expand_stmt, above.
-fn expand_non_macro_stmt(s: &Stmt, fld: &mut MacroExpander)
-                         -> SmallVector<@Stmt> {
+fn expand_non_macro_stmt(Spanned {node, span: stmt_span}: Stmt, fld: &mut MacroExpander)
+                         -> SmallVector<P<Stmt>> {
     // is it a let?
-    match s.node {
-        StmtDecl(decl, node_id) => {
-            match *decl {
-                Spanned {
-                    node: DeclLocal(ref local),
-                    span: stmt_span
-                } => {
-                    // take it apart:
-                    let Local {
-                        ty: _,
-                        pat: pat,
-                        init: init,
-                        id: id,
-                        span: span
-                    } = **local;
+    match node {
+        StmtDecl(decl, node_id) => decl.and_then(|Spanned {node: decl, span}| match decl {
+            DeclLocal(local) => {
+                // take it apart:
+                let rewritten_local = local.map(|Local {id, pat, ty, init, span}| {
                     // expand the pat (it might contain exprs... #:(o)>
                     let expanded_pat = fld.fold_pat(pat);
                     // find the pat_idents in the pattern:
@@ -672,45 +663,55 @@ fn expand_non_macro_stmt(s: &Stmt, fld: &mut MacroExpander)
                     // names, as well... but that should be okay, as long as
                     // the new names are gensyms for the old ones.
                     let mut name_finder = new_name_finder(Vec::new());
-                    name_finder.visit_pat(expanded_pat,());
+                    name_finder.visit_pat(&*expanded_pat,());
                     // generate fresh names, push them to a new pending list
-                    let mut new_pending_renames = Vec::new();
-                    for ident in name_finder.ident_accumulator.iter() {
-                        let new_name = fresh_name(ident);
-                        new_pending_renames.push((*ident,new_name));
-                    }
+                    let new_pending_renames: RenameList =
+                        name_finder.ident_accumulator.iter()
+                                   .map(|ident| (*ident, fresh_name(ident)))
+                                   .collect();
                     let rewritten_pat = {
-                        let mut rename_fld =
-                            renames_to_fold(&mut new_pending_renames);
+                        let mut rename_fld = renames_to_fold(new_pending_renames.as_slice());
                         // rewrite the pattern using the new names (the old
                         // ones have already been applied):
                         rename_fld.fold_pat(expanded_pat)
                     };
                     // add them to the existing pending renames:
                     fld.extsbox.info().pending_renames.push_all_move(new_pending_renames);
-                    // also, don't forget to expand the init:
-                    let new_init_opt = init.map(|e| fld.fold_expr(e));
-                    let rewritten_local =
-                        @Local {
-                            ty: local.ty,
-                            pat: rewritten_pat,
-                            init: new_init_opt,
-                            id: id,
-                            span: span,
-                        };
-                    SmallVector::one(@Spanned {
-                        node: StmtDecl(@Spanned {
-                                node: DeclLocal(rewritten_local),
-                                span: stmt_span
-                            },
-                            node_id),
-                        span: span
-                    })
-                }
-                _ => noop_fold_stmt(s, fld),
+                    Local {
+                        id: id,
+                        ty: ty,
+                        pat: rewritten_pat,
+                        // also, don't forget to expand the init:
+                        init: init.map(|e| fld.fold_expr(e)),
+                        span: span,
+                    }
+                });
+                SmallVector::one(P(Spanned {
+                    node: StmtDecl(P(Spanned {
+                            node: DeclLocal(rewritten_local),
+                            span: span
+                        }),
+                        node_id),
+                    span: stmt_span
+                }))
             }
-        },
-        _ => noop_fold_stmt(s, fld),
+            _ => {
+                noop_fold_stmt(Spanned {
+                    node: StmtDecl(P(Spanned {
+                            node: decl,
+                            span: span
+                        }),
+                        node_id),
+                    span: stmt_span
+                }, fld)
+            }
+        }),
+        _ => {
+            noop_fold_stmt(Spanned {
+                node: node,
+                span: stmt_span
+            }, fld)
+        }
     }
 }
 
@@ -746,7 +747,7 @@ impl Visitor<()> for NewNameFinderContext {
                 }
                 // visit optional subpattern of pat_ident:
                 for subpat in inner.iter() {
-                    self.visit_pat(*subpat, ())
+                    self.visit_pat(&**subpat, ())
                 }
             }
             // use the default traversal for non-pat_idents
@@ -770,44 +771,45 @@ pub fn new_name_finder(idents: Vec<ast::Ident> ) -> NewNameFinderContext {
 }
 
 // expand a block. pushes a new exts_frame, then calls expand_block_elts
-pub fn expand_block(blk: &Block, fld: &mut MacroExpander) -> P<Block> {
+pub fn expand_block(blk: P<Block>, fld: &mut MacroExpander) -> P<Block> {
     // see note below about treatment of exts table
     with_exts_frame!(fld.extsbox,false,
                      expand_block_elts(blk, fld))
 }
 
 // expand the elements of a block.
-pub fn expand_block_elts(b: &Block, fld: &mut MacroExpander) -> P<Block> {
-    let new_view_items = b.view_items.iter().map(|x| fld.fold_view_item(x)).collect();
-    let new_stmts =
-        b.stmts.iter().flat_map(|x| {
+pub fn expand_block_elts(b: P<Block>, fld: &mut MacroExpander) -> P<Block> {
+    b.map(|Block {id, view_items, stmts, expr, rules, span}| {
+        let new_view_items = view_items.move_iter().map(|x| fld.fold_view_item(x)).collect();
+        let new_stmts = stmts.move_iter().flat_map(|x| {
             let renamed_stmt = {
-                let pending_renames = &mut fld.extsbox.info().pending_renames;
+                let pending_renames = fld.extsbox.info().pending_renames.as_slice();
                 let mut rename_fld = renames_to_fold(pending_renames);
-                rename_fld.fold_stmt(*x).expect_one("rename_fold didn't return one value")
+                rename_fld.fold_stmt(x).expect_one("rename_fold didn't return one value")
             };
             fld.fold_stmt(renamed_stmt).move_iter()
         }).collect();
-    let new_expr = b.expr.map(|x| {
-        let expr = {
-            let pending_renames = &mut fld.extsbox.info().pending_renames;
-            let mut rename_fld = renames_to_fold(pending_renames);
-            rename_fld.fold_expr(x)
-        };
-        fld.fold_expr(expr)
-    });
-    P(Block {
-        view_items: new_view_items,
-        stmts: new_stmts,
-        expr: new_expr,
-        id: fld.new_id(b.id),
-        rules: b.rules,
-        span: b.span,
+        let new_expr = expr.map(|x| {
+            let expr = {
+                let pending_renames = fld.extsbox.info().pending_renames.as_slice();
+                let mut rename_fld = renames_to_fold(pending_renames);
+                rename_fld.fold_expr(x)
+            };
+            fld.fold_expr(expr)
+        });
+        Block {
+            id: fld.new_id(id),
+            view_items: new_view_items,
+            stmts: new_stmts,
+            expr: new_expr,
+            rules: rules,
+            span: span,
+        }
     })
 }
 
 pub struct IdentRenamer<'a> {
-    renames: &'a mut RenameList,
+    renames: &'a [(Ident, ast::Name)],
 }
 
 impl<'a> Folder for IdentRenamer<'a> {
@@ -822,9 +824,8 @@ impl<'a> Folder for IdentRenamer<'a> {
     }
 }
 
-// given a mutable list of renames, return a tree-folder that applies those
-// renames.
-pub fn renames_to_fold<'a>(renames: &'a mut RenameList) -> IdentRenamer<'a> {
+// Given a slice of renames, return a tree-folder that applies those renames.
+fn renames_to_fold<'a>(renames: &'a [(Ident, ast::Name)]) -> IdentRenamer<'a> {
     IdentRenamer {
         renames: renames,
     }
@@ -845,19 +846,19 @@ pub struct MacroExpander<'a, 'b> {
 }
 
 impl<'a, 'b> Folder for MacroExpander<'a, 'b> {
-    fn fold_expr(&mut self, expr: @ast::Expr) -> @ast::Expr {
+    fn fold_expr(&mut self, expr: P<ast::Expr>) -> P<ast::Expr> {
         expand_expr(expr, self)
     }
 
-    fn fold_item(&mut self, item: @ast::Item) -> SmallVector<@ast::Item> {
+    fn fold_item(&mut self, item: P<ast::Item>) -> SmallVector<P<ast::Item>> {
         expand_item(item, self)
     }
 
-    fn fold_view_item(&mut self, vi: &ast::ViewItem) -> ast::ViewItem {
+    fn fold_view_item(&mut self, vi: ast::ViewItem) -> ast::ViewItem {
         expand_view_item(vi, self)
     }
 
-    fn fold_stmt(&mut self, stmt: &ast::Stmt) -> SmallVector<@ast::Stmt> {
+    fn fold_stmt(&mut self, stmt: P<ast::Stmt>) -> SmallVector<P<ast::Stmt>> {
         expand_stmt(stmt, self)
     }
 
@@ -908,17 +909,16 @@ impl Folder for Marker {
             ctxt: mtwt::new_mark(self.mark, id.ctxt)
         }
     }
-    fn fold_mac(&mut self, m: &ast::Mac) -> ast::Mac {
-        let macro = match m.node {
-            MacInvocTT(ref path, ref tts, ctxt) => {
-                MacInvocTT(self.fold_path(path),
-                           fold_tts(tts.as_slice(), self),
-                           mtwt::new_mark(self.mark, ctxt))
-            }
-        };
+    fn fold_mac(&mut self, Spanned {node, span}: ast::Mac) -> ast::Mac {
         Spanned {
-            node: macro,
-            span: m.span,
+            node: match node {
+                MacInvocTT(path, tts, ctxt) => {
+                    MacInvocTT(self.fold_path(path),
+                               fold_tts(tts.as_slice(), self),
+                               mtwt::new_mark(self.mark, ctxt))
+                }
+            },
+            span: span,
         }
     }
 }
@@ -934,18 +934,18 @@ fn mark_tts(tts: &[TokenTree], m: Mrk) -> Vec<TokenTree> {
 }
 
 // apply a given mark to the given expr. Used following the expansion of a macro.
-fn mark_expr(expr: @ast::Expr, m: Mrk) -> @ast::Expr {
+fn mark_expr(expr: P<ast::Expr>, m: Mrk) -> P<ast::Expr> {
     new_mark_folder(m).fold_expr(expr)
 }
 
 // apply a given mark to the given stmt. Used following the expansion of a macro.
-fn mark_stmt(expr: &ast::Stmt, m: Mrk) -> @ast::Stmt {
+fn mark_stmt(expr: P<ast::Stmt>, m: Mrk) -> P<ast::Stmt> {
     new_mark_folder(m).fold_stmt(expr)
             .expect_one("marking a stmt didn't return a stmt")
 }
 
 // apply a given mark to the given item. Used following the expansion of a macro.
-fn mark_item(expr: @ast::Item, m: Mrk) -> SmallVector<@ast::Item> {
+fn mark_item(expr: P<ast::Item>, m: Mrk) -> SmallVector<P<ast::Item>> {
     new_mark_folder(m).fold_item(expr)
 }
 
@@ -1101,10 +1101,10 @@ mod test {
             span:codemap::DUMMY_SP,
             node: Attribute_ {
                 style: AttrOuter,
-                value: @Spanned {
+                value: P(Spanned {
                     node: MetaWord(token::intern_and_get_ident(s)),
                     span: codemap::DUMMY_SP,
-                },
+                }),
                 is_sugared_doc: false,
             }
         }

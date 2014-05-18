@@ -44,10 +44,10 @@ pub fn expand_cfg(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
     }
 
     // test_cfg searches for meta items looking like `cfg(foo, ...)`
-    let in_cfg = &[cx.meta_list(sp, InternedString::new("cfg"), cfgs)];
+    let in_cfg = Some(cx.meta_list(sp, InternedString::new("cfg"), cfgs));
 
     let matches_cfg = attr::test_cfg(cx.cfg().as_slice(),
-                                     in_cfg.iter().map(|&x| x));
+                                     in_cfg.iter());
     let e = cx.expr_bool(sp, matches_cfg);
     MacExpr::new(e)
 }

@@ -14,13 +14,14 @@ use ext::base::ExtCtxt;
 use ext::build::AstBuilder;
 use ext::deriving::generic::*;
 use parse::token::InternedString;
+use ptr::P;
 
 pub fn expand_deriving_totaleq(cx: &mut ExtCtxt,
                                span: Span,
-                               mitem: @MetaItem,
-                               item: @Item,
-                               push: |@Item|) {
-    fn cs_total_eq_assert(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> @Expr {
+                               mitem: &MetaItem,
+                               item: &Item,
+                               push: |P<Item>|) {
+    fn cs_total_eq_assert(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<Expr> {
         cs_same_method(|cx, span, exprs| {
             // create `a.<method>(); b.<method>(); c.<method>(); ...`
             // (where method is `assert_receiver_is_total_eq`)

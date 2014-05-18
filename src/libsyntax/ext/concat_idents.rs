@@ -15,6 +15,7 @@ use ext::base;
 use owned_slice::OwnedSlice;
 use parse::token;
 use parse::token::{str_to_ident};
+use ptr::P;
 
 use std::strbuf::StrBuf;
 
@@ -44,7 +45,7 @@ pub fn expand_syntax_ext(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
     }
     let res = str_to_ident(res_str.into_owned());
 
-    let e = @ast::Expr {
+    let e = P(ast::Expr {
         id: ast::DUMMY_NODE_ID,
         node: ast::ExprPath(
             ast::Path {
@@ -60,6 +61,6 @@ pub fn expand_syntax_ext(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
             }
         ),
         span: sp,
-    };
+    });
     MacExpr::new(e)
 }

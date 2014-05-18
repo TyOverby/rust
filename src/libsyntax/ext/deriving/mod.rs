@@ -21,6 +21,7 @@ library.
 use ast::{Item, MetaItem, MetaList, MetaNameValue, MetaWord};
 use ext::base::ExtCtxt;
 use codemap::Span;
+use ptr::P;
 
 pub mod bounds;
 pub mod clone;
@@ -47,9 +48,9 @@ pub mod generic;
 
 pub fn expand_meta_deriving(cx: &mut ExtCtxt,
                             _span: Span,
-                            mitem: @MetaItem,
-                            item: @Item,
-                            push: |@Item|) {
+                            mitem: &MetaItem,
+                            item: &Item,
+                            push: |P<Item>|) {
     match mitem.node {
         MetaNameValue(_, ref l) => {
             cx.span_err(l.span, "unexpected value in `deriving`");
@@ -61,13 +62,13 @@ pub fn expand_meta_deriving(cx: &mut ExtCtxt,
             cx.span_warn(mitem.span, "empty trait list in `deriving`");
         }
         MetaList(_, ref titems) => {
-            for &titem in titems.iter().rev() {
+            for titem in titems.iter().rev() {
                 match titem.node {
                     MetaNameValue(ref tname, _) |
                     MetaList(ref tname, _) |
                     MetaWord(ref tname) => {
                         macro_rules! expand(($func:path) => ($func(cx, titem.span,
-                                                                   titem, item,
+                                                                   &**titem, item,
                                                                    |i| push(i))));
                         match tname.get() {
                             "Clone" => expand!(clone::expand_deriving_clone),

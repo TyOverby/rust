@@ -21,6 +21,7 @@ use ast::{Expr, ExprLit, LitNil};
 use codemap::{Span, respan};
 use parse::parser::Parser;
 use parse::token;
+use ptr::P;
 
 /// The specific types of unsupported syntax
 #[deriving(Eq, TotalEq, Hash)]
@@ -50,7 +51,7 @@ pub trait ParserObsoleteMethods {
     fn obsolete(&mut self, sp: Span, kind: ObsoleteSyntax);
     // Reports an obsolete syntax non-fatal error, and returns
     // a placeholder expression
-    fn obsolete_expr(&mut self, sp: Span, kind: ObsoleteSyntax) -> @Expr;
+    fn obsolete_expr(&mut self, sp: Span, kind: ObsoleteSyntax) -> P<Expr>;
     fn report(&mut self,
               sp: Span,
               kind: ObsoleteSyntax,
@@ -148,9 +149,9 @@ impl<'a> ParserObsoleteMethods for Parser<'a> {
 
     // Reports an obsolete syntax non-fatal error, and returns
     // a placeholder expression
-    fn obsolete_expr(&mut self, sp: Span, kind: ObsoleteSyntax) -> @Expr {
+    fn obsolete_expr(&mut self, sp: Span, kind: ObsoleteSyntax) -> P<Expr> {
         self.obsolete(sp, kind);
-        self.mk_expr(sp.lo, sp.hi, ExprLit(@respan(sp, LitNil)))
+        self.mk_expr(sp.lo, sp.hi, ExprLit(P(respan(sp, LitNil))))
     }
 
     fn report(&mut self,

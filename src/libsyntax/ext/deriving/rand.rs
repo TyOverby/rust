@@ -14,12 +14,13 @@ use codemap::Span;
 use ext::base::ExtCtxt;
 use ext::build::{AstBuilder};
 use ext::deriving::generic::*;
+use ptr::P;
 
 pub fn expand_deriving_rand(cx: &mut ExtCtxt,
                             span: Span,
-                            mitem: @MetaItem,
-                            item: @Item,
-                            push: |@Item|) {
+                            mitem: &MetaItem,
+                            item: &Item,
+                            push: |P<Item>|) {
     let trait_def = TraitDef {
         span: span,
         attributes: Vec::new(),
@@ -52,9 +53,9 @@ pub fn expand_deriving_rand(cx: &mut ExtCtxt,
     trait_def.expand(cx, mitem, item, push)
 }
 
-fn rand_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> @Expr {
+fn rand_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> P<Expr> {
     let rng = match substr.nonself_args {
-        [rng] => vec!( rng ),
+        [ref rng] => rng,
         _ => cx.bug("Incorrect number of arguments to `rand` in `deriving(Rand)`")
     };
     let rand_ident = vec!(
@@ -65,7 +66,7 @@ fn rand_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) 
     let rand_call = |cx: &mut ExtCtxt, span| {
         cx.expr_call_global(span,
                             rand_ident.clone(),
-                            vec!( *rng.get(0) ))
+                            vec!(rng.clone()))
     };
 
     return match *substr.fields {
@@ -91,7 +92,7 @@ fn rand_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) 
             // ::rand::Rand::rand(rng)
             let rv_call = cx.expr_call(trait_span,
                                        rand_name,
-                                       vec!( *rng.get(0) ));
+                                       vec!(rng.clone()));
 
             // need to specify the uint-ness of the random number
             let uint_ty = cx.ty_ident(trait_span, cx.ident_of("uint"));
@@ -132,8 +133,8 @@ fn rand_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) 
                   trait_span: Span,
                   ctor_ident: Ident,
                   summary: &StaticFields,
-                  rand_call: |&mut ExtCtxt, Span| -> @Expr)
-                  -> @Expr {
+                  rand_call: |&mut ExtCtxt, Span| -> P<Expr>)
+                  -> P<Expr> {
         match *summary {
             Unnamed(ref fields) => {
                 if fields.is_empty() {

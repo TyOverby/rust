@@ -15,12 +15,13 @@ use ext::base::ExtCtxt;
 use ext::build::AstBuilder;
 use ext::deriving::generic::*;
 use parse::token::InternedString;
+use ptr::P;
 
 pub fn expand_deriving_ord(cx: &mut ExtCtxt,
                            span: Span,
-                           mitem: @MetaItem,
-                           item: @Item,
-                           push: |@Item|) {
+                           mitem: &MetaItem,
+                           item: &Item,
+                           push: |P<Item>|) {
     macro_rules! md (
         ($name:expr, $op:expr, $equal:expr) => { {
             let inline = cx.meta_word(span, InternedString::new("inline"));
@@ -57,7 +58,8 @@ pub fn expand_deriving_ord(cx: &mut ExtCtxt,
 }
 
 /// Strict inequality.
-fn cs_op(less: bool, equal: bool, cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> @Expr {
+fn cs_op(less: bool, equal: bool, cx: &mut ExtCtxt,
+         span: Span, substr: &Substructure) -> P<Expr> {
     let op = if less {ast::BiLt} else {ast::BiGt};
     cs_fold(
         false, // need foldr,
@@ -80,14 +82,14 @@ fn cs_op(less: bool, equal: bool, cx: &mut ExtCtxt, span: Span, substr: &Substru
             layers of pointers, if the type includes pointers.
             */
             let other_f = match other_fs {
-                [o_f] => o_f,
+                [ref o_f] => o_f,
                 _ => cx.span_bug(span, "not exactly 2 arguments in `deriving(Ord)`")
             };
 
-            let cmp = cx.expr_binary(span, op, self_f, other_f);
+            let cmp = cx.expr_binary(span, op, self_f.clone(), other_f.clone());
 
             let not_cmp = cx.expr_unary(span, ast::UnNot,
-                                        cx.expr_binary(span, op, other_f, self_f));
+                                        cx.expr_binary(span, op, other_f.clone(), self_f));
 
             let and = cx.expr_binary(span, ast::BiAnd, not_cmp, subexpr);
             cx.expr_binary(span, ast::BiOr, cmp, and)

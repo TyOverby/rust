@@ -9,10 +9,11 @@
 // except according to those terms.
 
 use ast;
-use ast::{P, Ident, Name, Mrk};
+use ast::{Ident, Name, Mrk};
 use ast_util;
 use ext::mtwt;
 use parse::token;
+use ptr::P;
 use util::interner::{RcStr, StrInterner};
 use util::interner;
 
@@ -106,17 +107,17 @@ pub enum Token {
 #[deriving(Clone, Encodable, Decodable, Eq, TotalEq, Hash)]
 /// For interpolation during macro expansion.
 pub enum Nonterminal {
-    NtItem(@ast::Item),
+    NtItem( P<ast::Item>),
     NtBlock(P<ast::Block>),
-    NtStmt(@ast::Stmt),
-    NtPat( @ast::Pat),
-    NtExpr(@ast::Expr),
-    NtTy(  P<ast::Ty>),
+    NtStmt( P<ast::Stmt>),
+    NtPat(  P<ast::Pat>),
+    NtExpr( P<ast::Expr>),
+    NtTy(   P<ast::Ty>),
     NtIdent(Box<ast::Ident>, bool),
-    NtMeta(@ast::MetaItem), // stuff inside brackets for attributes
+    NtMeta( P<ast::MetaItem>), // stuff inside brackets for attributes
     NtPath(Box<ast::Path>),
-    NtTT(  @ast::TokenTree), // needs @ed to break a circularity
-    NtMatchers(Vec<ast::Matcher> )
+    NtTT(   P<ast::TokenTree>), // needs P'ed to break a circularity
+    NtMatchers(Vec<ast::Matcher>)
 }
 
 impl fmt::Show for Nonterminal {
@@ -243,8 +244,8 @@ pub fn to_str(t: &Token) -> StrBuf {
       EOF => "<eof>".to_strbuf(),
       INTERPOLATED(ref nt) => {
         match nt {
-            &NtExpr(e) => ::print::pprust::expr_to_str(e),
-            &NtMeta(e) => ::print::pprust::meta_item_to_str(e),
+            &NtExpr(ref e) => ::print::pprust::expr_to_str(&**e),
+            &NtMeta(ref e) => ::print::pprust::meta_item_to_str(&**e),
             _ => {
                 let mut s = "an interpolated ".to_strbuf();
                 match *nt {

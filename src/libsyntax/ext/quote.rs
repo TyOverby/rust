@@ -16,6 +16,7 @@ use ext::build::AstBuilder;
 use parse::token::*;
 use parse::token;
 use parse;
+use ptr::P;
 
 
 /**
@@ -35,6 +36,7 @@ pub mod rt {
     use parse::token;
     use parse;
     use print::pprust;
+    use ptr::P;
 
     pub use ast::*;
     pub use parse::token::*;
@@ -76,13 +78,13 @@ pub mod rt {
         }
     }
 
-    impl ToSource for @ast::Item {
+    impl ToSource for P<ast::Item> {
         fn to_source(&self) -> StrBuf {
-            pprust::item_to_str(*self)
+            pprust::item_to_str(&**self)
         }
     }
 
-    impl<'a> ToSource for &'a [@ast::Item] {
+    impl<'a> ToSource for &'a [P<ast::Item>] {
         fn to_source(&self) -> StrBuf {
             self.iter()
                 .map(|i| i.to_source())
@@ -114,9 +116,9 @@ pub mod rt {
         }
     }
 
-    impl ToSource for @ast::Expr {
+    impl ToSource for P<ast::Expr> {
         fn to_source(&self) -> StrBuf {
-            pprust::expr_to_str(*self)
+            pprust::expr_to_str(&**self)
         }
     }
 
@@ -248,12 +250,12 @@ pub mod rt {
     )
 
     impl_to_tokens!(ast::Ident)
-    impl_to_tokens!(@ast::Item)
-    impl_to_tokens_self!(&'a [@ast::Item])
+    impl_to_tokens!(P<ast::Item>)
+    impl_to_tokens_self!(&'a [P<ast::Item>])
     impl_to_tokens!(ast::Ty)
     impl_to_tokens_self!(&'a [ast::Ty])
     impl_to_tokens!(Generics)
-    impl_to_tokens!(@ast::Expr)
+    impl_to_tokens!(P<ast::Expr>)
     impl_to_tokens!(ast::Block)
     impl_to_tokens_self!(&'a str)
     impl_to_tokens!(())
@@ -271,15 +273,15 @@ pub mod rt {
     impl_to_tokens!(u64)
 
     pub trait ExtParseUtils {
-        fn parse_item(&self, s: StrBuf) -> @ast::Item;
-        fn parse_expr(&self, s: StrBuf) -> @ast::Expr;
-        fn parse_stmt(&self, s: StrBuf) -> @ast::Stmt;
+        fn parse_item(&self, s: StrBuf) -> P<ast::Item>;
+        fn parse_expr(&self, s: StrBuf) -> P<ast::Expr>;
+        fn parse_stmt(&self, s: StrBuf) -> P<ast::Stmt>;
         fn parse_tts(&self, s: StrBuf) -> Vec<ast::TokenTree> ;
     }
 
     impl<'a> ExtParseUtils for ExtCtxt<'a> {
 
-        fn parse_item(&self, s: StrBuf) -> @ast::Item {
+        fn parse_item(&self, s: StrBuf) -> P<ast::Item> {
             let res = parse::parse_item_from_source_str(
                 "<quote expansion>".to_strbuf(),
                 s,
@@ -294,7 +296,7 @@ pub mod rt {
             }
         }
 
-        fn parse_stmt(&self, s: StrBuf) -> @ast::Stmt {
+        fn parse_stmt(&self, s: StrBuf) -> P<ast::Stmt> {
             parse::parse_stmt_from_source_str("<quote expansion>".to_strbuf(),
                                               s,
                                               self.cfg(),
@@ -302,7 +304,7 @@ pub mod rt {
                                               self.parse_sess())
         }
 
-        fn parse_expr(&self, s: StrBuf) -> @ast::Expr {
+        fn parse_expr(&self, s: StrBuf) -> P<ast::Expr> {
             parse::parse_expr_from_source_str("<quote expansion>".to_strbuf(),
                                               s,
                                               self.cfg(),
@@ -384,7 +386,7 @@ fn id_ext(str: &str) -> ast::Ident {
 }
 
 // Lift an ident to the expr that evaluates to that ident.
-fn mk_ident(cx: &ExtCtxt, sp: Span, ident: ast::Ident) -> @ast::Expr {
+fn mk_ident(cx: &ExtCtxt, sp: Span, ident: ast::Ident) -> P<ast::Expr> {
     let e_str = cx.expr_str(sp, token::get_ident(ident));
     cx.expr_method_call(sp,
                         cx.expr_ident(sp, id_ext("ext_cx")),
@@ -392,7 +394,7 @@ fn mk_ident(cx: &ExtCtxt, sp: Span, ident: ast::Ident) -> @ast::Expr {
                         vec!(e_str))
 }
 
-fn mk_binop(cx: &ExtCtxt, sp: Span, bop: token::BinOp) -> @ast::Expr {
+fn mk_binop(cx: &ExtCtxt, sp: Span, bop: token::BinOp) -> P<ast::Expr> {
     let name = match bop {
         PLUS => "PLUS",
         MINUS => "MINUS",
@@ -408,7 +410,7 @@ fn mk_binop(cx: &ExtCtxt, sp: Span, bop: token::BinOp) -> @ast::Expr {
     cx.expr_ident(sp, id_ext(name))
 }
 
-fn mk_token(cx: &ExtCtxt, sp: Span, tok: &token::Token) -> @ast::Expr {
+fn mk_token(cx: &ExtCtxt, sp: Span, tok: &token::Token) -> P<ast::Expr> {
 
     match *tok {
         BINOP(binop) => {
@@ -561,7 +563,7 @@ fn mk_token(cx: &ExtCtxt, sp: Span, tok: &token::Token) -> @ast::Expr {
 }
 
 
-fn mk_tt(cx: &ExtCtxt, sp: Span, tt: &ast::TokenTree) -> Vec<@ast::Stmt> {
+fn mk_tt(cx: &ExtCtxt, sp: Span, tt: &ast::TokenTree) -> Vec<P<ast::Stmt>> {
 
     match *tt {
 
@@ -603,7 +605,7 @@ fn mk_tt(cx: &ExtCtxt, sp: Span, tt: &ast::TokenTree) -> Vec<@ast::Stmt> {
 }
 
 fn mk_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
-    -> Vec<@ast::Stmt> {
+    -> Vec<P<ast::Stmt>> {
     let mut ss = Vec::new();
     for tt in tts.iter() {
         ss.push_all_move(mk_tt(cx, sp, tt));
@@ -612,7 +614,7 @@ fn mk_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 }
 
 fn expand_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
-              -> (@ast::Expr, @ast::Expr) {
+              -> (P<ast::Expr>, P<ast::Expr>) {
     // NB: It appears that the main parser loses its mind if we consider
     // $foo as a TTNonterminal during the main parse, so we have to re-parse
     // under quote_depth > 0. This is silly and should go away; the _guess_ is
@@ -684,8 +686,8 @@ fn expand_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 
 fn expand_wrapper(cx: &ExtCtxt,
                   sp: Span,
-                  cx_expr: @ast::Expr,
-                  expr: @ast::Expr) -> @ast::Expr {
+                  cx_expr: P<ast::Expr>,
+                  expr: P<ast::Expr>) -> P<ast::Expr> {
     let uses = vec![ cx.view_use_glob(sp, ast::Inherited,
                                    ids_ext(vec!["syntax".to_strbuf(),
                                                 "ext".to_strbuf(),
@@ -700,8 +702,8 @@ fn expand_wrapper(cx: &ExtCtxt,
 fn expand_parse_call(cx: &ExtCtxt,
                      sp: Span,
                      parse_method: &str,
-                     arg_exprs: Vec<@ast::Expr> ,
-                     tts: &[ast::TokenTree]) -> @ast::Expr {
+                     arg_exprs: Vec<P<ast::Expr>> ,
+                     tts: &[ast::TokenTree]) -> P<ast::Expr> {
     let (cx_expr, tts_expr) = expand_tts(cx, sp, tts);
 
     let cfg_call = || cx.expr_method_call(

@@ -9,22 +9,23 @@
 // except according to those terms.
 
 use ast;
-use ast::{MetaItem, Item, Expr};
+use ast::{MetaItem, Item, Expr,};
 use codemap::Span;
 use ext::format;
 use ext::base::ExtCtxt;
 use ext::build::AstBuilder;
 use ext::deriving::generic::*;
 use parse::token;
+use ptr::P;
 
 use collections::HashMap;
 use std::strbuf::StrBuf;
 
 pub fn expand_deriving_show(cx: &mut ExtCtxt,
                             span: Span,
-                            mitem: @MetaItem,
-                            item: @Item,
-                            push: |@Item|) {
+                            mitem: &MetaItem,
+                            item: &Item,
+                            push: |P<Item>|) {
     // &mut ::std::fmt::Formatter
     let fmtr = Ptr(box Literal(Path::new(vec!("std", "fmt", "Formatter"))),
                    Borrowed(None, ast::MutMutable));
@@ -56,7 +57,7 @@ pub fn expand_deriving_show(cx: &mut ExtCtxt,
 // we construct a format string and then defer to std::fmt, since that
 // knows what's up with formatting at so on.
 fn show_substructure(cx: &mut ExtCtxt, span: Span,
-                     substr: &Substructure) -> @Expr {
+                     substr: &Substructure) -> P<Expr> {
     // build `<name>`, `<name>({}, {}, ...)` or `<name> { <field>: {},
     // <field>: {}, ... }` based on the "shape".
     //
@@ -91,7 +92,7 @@ fn show_substructure(cx: &mut ExtCtxt, span: Span,
 
                     format_string.push_str("{}");
 
-                    exprs.push(field.self_);
+                    exprs.push(field.self_.clone());
                 }
 
                 format_string.push_str(")");
@@ -108,7 +109,7 @@ fn show_substructure(cx: &mut ExtCtxt, span: Span,
                     format_string.push_str(name.get());
                     format_string.push_str(": {}");
 
-                    exprs.push(field.self_);
+                    exprs.push(field.self_.clone());
                 }
 
                 format_string.push_str(" \\}");
@@ -123,7 +124,7 @@ fn show_substructure(cx: &mut ExtCtxt, span: Span,
     // format_arg_method!(fmt, write_fmt, "<format_string>", exprs...)
     //
     // but doing it directly via ext::format.
-    let formatter = substr.nonself_args[0];
+    let formatter = substr.nonself_args[0].clone();
 
     let meth = cx.ident_of("write_fmt");
     let s = token::intern_and_get_ident(format_string.as_slice());

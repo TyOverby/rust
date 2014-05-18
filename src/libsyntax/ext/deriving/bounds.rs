@@ -12,12 +12,13 @@ use ast::{MetaItem, MetaWord, Item};
 use codemap::Span;
 use ext::base::ExtCtxt;
 use ext::deriving::generic::*;
+use ptr::P;
 
 pub fn expand_deriving_bound(cx: &mut ExtCtxt,
                              span: Span,
-                             mitem: @MetaItem,
-                             item: @Item,
-                             push: |@Item|) {
+                             mitem: &MetaItem,
+                             item: &Item,
+                             push: |P<Item>|) {
 
     let name = match mitem.node {
         MetaWord(ref tname) => {

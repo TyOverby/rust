@@ -19,6 +19,7 @@ use ext::base::*;
 use parse;
 use parse::token::InternedString;
 use parse::token;
+use ptr::P;
 
 
 enum State {
@@ -106,7 +107,7 @@ pub fn expand_asm(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                         (Some('='), _) => None,
                         (Some('+'), operand) => {
                             // Save a reference to the output
-                            read_write_operands.push((outputs.len(), out));
+                            read_write_operands.push((outputs.len(), out.clone()));
                             Some(token::intern_and_get_ident("=" + operand))
                         }
                         _ => {
@@ -207,11 +208,11 @@ pub fn expand_asm(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 
     // Append an input operand, with the form of ("0", expr)
     // that links to an output operand.
-    for &(i, out) in read_write_operands.iter() {
+    for (i, out) in read_write_operands.move_iter() {
         inputs.push((token::intern_and_get_ident(i.to_str()), out));
     }
 
-    MacExpr::new(@ast::Expr {
+    MacExpr::new(P(ast::Expr {
         id: ast::DUMMY_NODE_ID,
         node: ast::ExprInlineAsm(ast::InlineAsm {
             asm: token::intern_and_get_ident(asm.get()),
@@ -224,5 +225,5 @@ pub fn expand_asm(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
             dialect: dialect
         }),
         span: sp
-    })
+    }))
 }

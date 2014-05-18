@@ -9,6 +9,7 @@
 // except according to those terms.
 
 use ast;
+use ast::P;
 use parse::{new_parse_sess};
 use parse::{ParseSess,string_to_filemap,filemap_to_tts};
 use parse::{new_parser_from_source_str};
@@ -46,21 +47,21 @@ pub fn string_to_crate (source_str : StrBuf) -> ast::Crate {
 }
 
 // parse a string, return an expr
-pub fn string_to_expr (source_str : StrBuf) -> @ast::Expr {
+pub fn string_to_expr (source_str : StrBuf) -> P<ast::Expr> {
     with_error_checking_parse(source_str, |p| {
         p.parse_expr()
     })
 }
 
 // parse a string, return an item
-pub fn string_to_item (source_str : StrBuf) -> Option<@ast::Item> {
+pub fn string_to_item (source_str : StrBuf) -> Option<P<ast::Item>> {
     with_error_checking_parse(source_str, |p| {
         p.parse_item(Vec::new())
     })
 }
 
 // parse a string, return a stmt
-pub fn string_to_stmt(source_str : StrBuf) -> @ast::Stmt {
+pub fn string_to_stmt(source_str : StrBuf) -> P<ast::Stmt> {
     with_error_checking_parse(source_str, |p| {
         p.parse_stmt(Vec::new())
     })
@@ -68,7 +69,7 @@ pub fn string_to_stmt(source_str : StrBuf) -> @ast::Stmt {
 
 // parse a string, return a pat. Uses "irrefutable"... which doesn't
 // (currently) affect parsing.
-pub fn string_to_pat(source_str: StrBuf) -> @ast::Pat {
+pub fn string_to_pat(source_str: StrBuf) -> P<ast::Pat> {
     string_to_parser(&new_parse_sess(), source_str).parse_pat()
 }
 
